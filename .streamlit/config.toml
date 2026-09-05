@@ -1,0 +1,17 @@
+[theme]
+base = "dark"
+primaryColor = "#38bdf8"
+backgroundColor = "#0b0f19"
+secondaryBackgroundColor = "#121826"
+textColor = "#e6ebf5"
+font = "sans serif"
+
+[server]
+# Bind to loopback only. Streamlit has no authentication of its own; do not expose
+# this port directly. Put an identity proxy in front of it if it must leave localhost.
+address = "127.0.0.1"
+port = 8501
+headless = true
+
+[browser]
+gatherUsageStats = false

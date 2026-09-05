@@ -1,0 +1,229 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from typing import Sequence
+
+from tradesys.agents.base import Agent
+from tradesys.clients.profile import ClientProfile
+from tradesys.core.clock import Clock
+from tradesys.core.enums import MemoryKind, SetupType, Side
+from tradesys.core.models import Bar, Candidate, FeedbackDirective
+from tradesys.core.tenancy import TenantContext
+from tradesys.data import indicators
+from tradesys.data.market_data import MarketDataProvider
+from tradesys.memory.directives import apply_directives
+from tradesys.memory.store import VectorMemory
+
+_STOP_ATR_MULTIPLE = 1.5
+_TARGET_R_MULTIPLE = 2.5
+
+
+class ScoutAgent(Agent):
+    """Proposes trade ideas from one tenant's watchlist, informed by its own memory.
+
+    The pipeline is deliberately split in two:
+
+      1. *Detection* is mechanical (indicators only). It produces candidates with
+         concrete entry, stop and target levels, so a downstream model cannot invent
+         price levels the risk engine would have to trust.
+      2. *Ranking* is where memory enters. Retrieved lessons adjust confidence, and
+         AVOID directives veto candidates outright — in code, not in a prompt.
+    """
+
+    name = "scout"
+
+    def __init__(
+        self,
+        tenant: TenantContext,
+        profile: ClientProfile,
+        market_data: MarketDataProvider,
+        memory: VectorMemory,
+        directives: Sequence[FeedbackDirective] = (),
+        clock: Clock | None = None,
+    ) -> None:
+        super().__init__(tenant, profile, clock)
+        if memory.client_id != tenant.client_id:
+            raise ValueError("memory store belongs to a different tenant")
+        self._market_data = market_data
+        self._memory = memory
+        self._directives = tuple(directives)
+
+    def scan(self) -> list[Candidate]:
+        raw: list[Candidate] = []
+        for entry in self.profile.watchlist:
+            bars = self._market_data.history(
+                entry.symbol,
+                timeframe=self.profile.timeframe,
+                limit=self.profile.lookback_bars,
+            )
+            if len(bars) < 60:
+                self.log.debug("skipping %s: only %d bars", entry.symbol, len(bars))
+                continue
+            raw.extend(self._detect(entry.symbol, bars))
+
+        ranked = [c for c in (self._apply_memory(c) for c in raw) if c is not None]
+        ranked.sort(key=lambda c: c.confidence, reverse=True)
+        return ranked[: self.profile.max_candidates_per_cycle]
+
+    # ------------------------------------------------------------- detection
+
+    def _detect(self, symbol: str, bars: Sequence[Bar]) -> list[Candidate]:
+        """Reference technical setups.
+
+        These are structural placeholders that show where signal logic plugs in.
+        They are not a validated edge — replace them with your own researched rules
+        and backtest before trusting them with capital.
+        """
+        prices = indicators.closes(bars)
+        last = bars[-1]
+        atr = indicators.atr(bars, 14)
+        if not atr or atr <= 0:
+            return []
+
+        sma20 = indicators.sma(prices, 20)
+        sma50 = indicators.sma(prices, 50)
+        rsi14 = indicators.rsi(prices, 14)
+        avg_volume = indicators.average_volume(bars, 20) or 0.0
+        breakout_level = indicators.donchian_high(bars, 20)
+        if sma20 is None or sma50 is None or rsi14 is None or breakout_level is None:
+            return []
+
+        features = {
+            "atr": atr,
+            "rsi": rsi14,
+            "sma20": sma20,
+            "sma50": sma50,
+            "avg_volume": avg_volume,
+            "volume_ratio": last.volume / avg_volume if avg_volume else 0.0,
+        }
+
+        found: list[Candidate] = []
+
+        if (
+            last.close > breakout_level
+            and avg_volume > 0
+            and last.volume > 1.5 * avg_volume
+            and last.close > sma50
+        ):
+            found.append(
+                self._build(
+                    symbol,
+                    SetupType.BREAKOUT,
+                    last.close,
+                    atr,
+                    features,
+                    confidence=0.62,
+                    rationale=(
+                        f"closed {last.close:.2f} above the 20-bar high "
+                        f"{breakout_level:.2f} on {features['volume_ratio']:.1f}x volume"
+                    ),
+                )
+            )
+
+        if last.close > sma50 and sma20 <= last.close <= sma20 * 1.02 and 40 <= rsi14 <= 58:
+            found.append(
+                self._build(
+                    symbol,
+                    SetupType.PULLBACK,
+                    last.close,
+                    atr,
+                    features,
+                    confidence=0.55,
+                    rationale=(
+                        f"pullback to the 20SMA ({sma20:.2f}) while above the 50SMA, "
+                        f"RSI {rsi14:.0f}"
+                    ),
+                )
+            )
+
+        if rsi14 < 30 and last.close > bars[-2].close:
+            found.append(
+                self._build(
+                    symbol,
+                    SetupType.OVERSOLD_REVERSAL,
+                    last.close,
+                    atr,
+                    features,
+                    confidence=0.45,
+                    rationale=f"RSI {rsi14:.0f} with an up-close reversal bar",
+                )
+            )
+
+        if last.close > sma20 > sma50 and rsi14 > 55:
+            found.append(
+                self._build(
+                    symbol,
+                    SetupType.TREND_CONTINUATION,
+                    last.close,
+                    atr,
+                    features,
+                    confidence=0.50,
+                    rationale=f"price above a rising 20/50 SMA stack, RSI {rsi14:.0f}",
+                )
+            )
+
+        return [c for c in found if self.profile.allows_setup(symbol, c.setup)]
+
+    def _build(
+        self,
+        symbol: str,
+        setup: SetupType,
+        price: float,
+        atr: float,
+        features: dict[str, float],
+        *,
+        confidence: float,
+        rationale: str,
+    ) -> Candidate:
+        stop = price - _STOP_ATR_MULTIPLE * atr
+        target = price + _TARGET_R_MULTIPLE * (price - stop)
+        return Candidate(
+            client_id=self.client_id,
+            symbol=symbol,
+            setup=setup,
+            side=Side.BUY,
+            entry=round(price, 4),
+            stop=round(stop, 4),
+            target=round(target, 4),
+            confidence=confidence,
+            rationale=rationale,
+            features=features,
+        )
+
+    # ---------------------------------------------------------------- memory
+
+    def _memory_query(self, candidate: Candidate) -> str:
+        return (
+            f"{candidate.symbol} {candidate.setup.value} setup, "
+            f"entry {candidate.entry:.2f}, {candidate.rationale}"
+        )
+
+    def _apply_memory(self, candidate: Candidate) -> Candidate | None:
+        """RAG step: retrieve this tenant's lessons, then enforce its directives.
+
+        Returns ``None`` when a directive vetoes the idea, so it never reaches the
+        Risk Manager or the broker.
+        """
+        vetoed, multiplier, notes = apply_directives(self._directives, candidate)
+        if vetoed:
+            self.log.info("memory veto on %s: %s", candidate.symbol, "; ".join(notes))
+            return None
+
+        hits = self._memory.query(
+            self._memory_query(candidate),
+            k=self.profile.memory_top_k,
+            kinds=(
+                MemoryKind.HUMAN_FEEDBACK,
+                MemoryKind.TRADE_POSTMORTEM,
+                MemoryKind.SESSION_LESSON,
+            ),
+        )
+        context = tuple(
+            f"[{hit.score:.2f}] {hit.record.text}" for hit in hits if hit.score > 0.15
+        )
+
+        return replace(
+            candidate,
+            confidence=round(min(candidate.confidence * multiplier, 0.99), 4),
+            memory_context=context + tuple(notes),
+        )

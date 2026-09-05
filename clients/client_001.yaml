@@ -1,0 +1,41 @@
+# A second tenant, showing that a different risk appetite and universe is a config
+# change, not a code change. This client's memory, journal and keys are separate.
+client_id: client_001
+display_name: Northline Capital (pilot)
+timeframe: 1Day
+lookback_bars: 250
+max_candidates_per_cycle: 8
+memory_top_k: 8
+monitor_interval_seconds: 60
+max_holding_days: 20
+tags: [b2b, pilot]
+
+broker:
+  name: paper
+  paper: true
+  credential_ref: TRADESYS__CLIENT_001__ALPACA
+
+risk:
+  max_drawdown_pct: 5.0        # wider than tal_dahan by design
+  max_daily_loss_pct: 3.0
+  risk_per_trade_pct: 1.0
+  max_position_pct: 20.0
+  max_open_positions: 10
+  max_trades_per_day: 8
+  min_reward_risk: 1.5
+  allow_short: true
+  allow_leverage: false
+  min_price: 5.0
+  max_position_pct_of_adv: 0.01
+  forbidden_setups: [oversold_reversal]   # this client does not catch falling knives
+
+watchlist:
+  - symbol: AAPL
+    setups: [pullback, trend_continuation]
+  - symbol: MSFT
+    setups: [pullback, trend_continuation]
+  - symbol: NVDA
+    setups: [breakout, trend_continuation]
+  - symbol: RIVN
+    setups: [breakout]
+    notes: same ticker as tal_dahan, evaluated under this client's own memory

@@ -1,0 +1,43 @@
+# פרופיל הדמו הציבורי. רץ על נתוני שוק סינתטיים מול ברוקר נייר.
+# התוצאות הן מה שהמנוע האמיתי מפיק על הנתונים האלה — לא מספרים שנבחרו להרשים.
+client_id: demo_showcase
+display_name: חשבון הדגמה
+timeframe: 1Day
+lookback_bars: 180
+max_candidates_per_cycle: 4
+memory_top_k: 5
+monitor_interval_seconds: 60
+max_holding_days: 10
+tags: [demo, public]
+
+broker:
+  name: paper
+  paper: true
+
+risk:
+  max_drawdown_pct: 4.0
+  max_daily_loss_pct: 2.5
+  risk_per_trade_pct: 0.75
+  max_position_pct: 12.0
+  max_open_positions: 5
+  max_trades_per_day: 4
+  min_reward_risk: 2.0
+  allow_short: false
+  allow_leverage: false
+  min_price: 1.0
+  max_position_pct_of_adv: 0.02
+  forbidden_setups: []
+
+watchlist:
+  - symbol: KULR
+    setups: [breakout, pullback]
+  - symbol: SPCE
+    setups: [oversold_reversal, pullback]
+  - symbol: RIVN
+    setups: [breakout, pullback, trend_continuation]
+  - symbol: LFWD
+    setups: [oversold_reversal]
+  - symbol: BBLG
+    setups: [breakout]
+  - symbol: SQQQ
+    setups: [trend_continuation]

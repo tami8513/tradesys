@@ -1,0 +1,37 @@
+# נוצר אוטומטית באישור הרשמה. ערוך לפי הצורך.
+client_id: northline_capital
+display_name: Northline Capital
+timeframe: 1Day
+lookback_bars: 180
+max_candidates_per_cycle: 3
+memory_top_k: 5
+monitor_interval_seconds: 60
+max_holding_days: 10
+tags: [self_registered]
+
+broker:
+  name: paper
+  paper: true
+  credential_ref: TRADESYS__NORTHLINE_CAPITAL__ALPACA
+
+risk:
+  max_drawdown_pct: 2.0
+  max_daily_loss_pct: 1.5
+  risk_per_trade_pct: 0.5
+  max_position_pct: 10.0
+  max_open_positions: 4
+  max_trades_per_day: 3
+  min_reward_risk: 2.0
+  allow_short: false
+  allow_leverage: false
+  min_price: 1.0
+  max_position_pct_of_adv: 0.02
+  forbidden_setups: []
+
+watchlist:
+  - symbol: AAPL
+    setups: [pullback, trend_continuation]
+  - symbol: MSFT
+    setups: [pullback, trend_continuation]
+  - symbol: NVDA
+    setups: [breakout, trend_continuation]
