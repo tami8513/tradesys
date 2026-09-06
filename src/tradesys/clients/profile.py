@@ -28,6 +28,19 @@ class RiskProfile:
     min_price: float = 1.0           # keeps sub-$1 tickers out by construction
     max_position_pct_of_adv: float = 0.02  # liquidity cap vs. average daily volume
 
+    # --- gap risk -----------------------------------------------------------
+    # An ATR stop cannot protect against an overnight earnings gap: the position
+    # opens past the stop and the monitor sells at the open. None disables the
+    # filter; any integer blocks entries within that many days of a report.
+    avoid_earnings_within_days: int | None = None
+
+    # --- market regime ------------------------------------------------------
+    # Setups listed here are only permitted while `regime_symbol` trades at or
+    # above its `regime_sma_period` average. Empty set disables the filter.
+    regime_symbol: str = "SPY"
+    regime_sma_period: int = 200
+    regime_blocked_setups: frozenset[SetupType] = frozenset()
+
     def __post_init__(self) -> None:
         pcts = {
             "max_drawdown_pct": self.max_drawdown_pct,
@@ -47,6 +60,12 @@ class RiskProfile:
             raise ConfigError("position and trade-count limits must be >= 1")
         if self.min_reward_risk < 1.0:
             raise ConfigError("min_reward_risk below 1.0 is not accepted")
+        if self.avoid_earnings_within_days is not None and self.avoid_earnings_within_days < 0:
+            raise ConfigError("avoid_earnings_within_days must be >= 0 when set")
+        if self.regime_blocked_setups and self.regime_sma_period < 2:
+            raise ConfigError("regime_sma_period must be at least 2 bars")
+        if self.regime_blocked_setups and not self.regime_symbol:
+            raise ConfigError("regime_blocked_setups requires a regime_symbol")
 
 
 @dataclass(frozen=True, slots=True)

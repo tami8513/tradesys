@@ -29,6 +29,15 @@ risk:
   max_position_pct_of_adv: 0.02
   forbidden_setups: []
 
+  # סטופ מבוסס ATR לא שורד גאפ של דוח — חוסמים כניסה בחלון שלפניו.
+  # סימבול ללא תאריך ידוע ב-earnings.yaml ייחסם גם הוא, במכוון.
+  avoid_earnings_within_days: 3
+
+  # פילטר משטר שוק: פריצות נחסמות כשה-SPY מתחת לממוצע 200 שלו.
+  regime_symbol: SPY
+  regime_sma_period: 200
+  regime_blocked_setups: [breakout]
+
 watchlist:
   - symbol: KULR
     setups: [breakout, pullback]

@@ -18,7 +18,14 @@ from tradesys.core.config import Settings
 from tradesys.core.errors import ConfigError
 from tradesys.core.logging import configure, get_logger
 from tradesys.core.tenancy import TenantContext
+from tradesys.data.earnings import (
+    EarningsCalendar,
+    FinnhubEarningsCalendar,
+    NullEarningsCalendar,
+    StaticEarningsCalendar,
+)
 from tradesys.data.market_data import MarketDataProvider, SyntheticMarketData
+from tradesys.data.regime import MarketRegime, assess_regime
 from tradesys.memory.directives import DirectiveExtractor
 from tradesys.memory.store import LocalVectorMemory, VectorMemory
 from tradesys.persistence.journal import Journal
@@ -36,6 +43,7 @@ class CycleReport:
     rejections: list[tuple[str, tuple[str, ...]]] = field(default_factory=list)
     outcomes: list[ExecutionOutcome] = field(default_factory=list)
     monitor: MonitorReport | None = None
+    regime: MarketRegime | None = None
 
     def summary(self) -> str:
         exits = len(self.monitor.closed) if self.monitor else 0
@@ -65,6 +73,7 @@ class TradingSystem:
         market_data: MarketDataProvider | None = None,
         clock: Clock | None = None,
         extractor: DirectiveExtractor | None = None,
+        earnings: EarningsCalendar | None = None,
     ) -> None:
         self.settings = settings or Settings.from_env()
         configure(self.settings.log_level)
@@ -73,6 +82,7 @@ class TradingSystem:
         self.clock = clock or SystemClock()
         self._market_data_override = market_data
         self._extractor = extractor
+        self._earnings_override = earnings
 
     # ------------------------------------------------------------- factories
 
@@ -85,6 +95,20 @@ class TradingSystem:
 
             return ChromaVectorMemory(tenant)
         return LocalVectorMemory(tenant)
+
+    def _earnings(self) -> EarningsCalendar:
+        """Vendor feed when a key is configured, otherwise the operator's file.
+
+        Shared across tenants: an earnings date is a fact about the market, not
+        about a client, so there is nothing tenant-specific to isolate here.
+        """
+        if self._earnings_override is not None:
+            return self._earnings_override
+        if self.settings.finnhub_api_key:
+            return FinnhubEarningsCalendar(self.settings.finnhub_api_key)
+        if self.settings.earnings_file is None:
+            return NullEarningsCalendar()
+        return StaticEarningsCalendar(self.settings.earnings_file)
 
     def _market_data(self, profile: ClientProfile) -> MarketDataProvider:
         if self._market_data_override is not None:
@@ -142,7 +166,9 @@ class TradingSystem:
                 reflection.active_directives(),
                 self.clock,
             ),
-            risk=RiskManager(tenant, profile, journal, self.clock),
+            risk=RiskManager(
+                tenant, profile, journal, self.clock, earnings=self._earnings()
+            ),
             execution=execution,
             reflection=reflection,
             monitor=PositionMonitor(
@@ -183,6 +209,19 @@ class ClientSession:
     def client_id(self) -> str:
         return self.tenant.client_id
 
+    def market_regime(self) -> MarketRegime | None:
+        """Current broad-market read, or None when the filter is off/unreadable."""
+        limits = self.profile.risk
+        if not limits.regime_blocked_setups:
+            return None
+        return assess_regime(
+            self.market_data,
+            limits.regime_symbol,
+            period=limits.regime_sma_period,
+            timeframe=self.profile.timeframe,
+            now=self.clock.now(),
+        )
+
     def run_cycle(self) -> CycleReport:
         """Monitor -> Scout -> Risk -> Execute -> Reflect, for this tenant only."""
         log = get_logger("tradesys.engine", self.client_id)
@@ -203,12 +242,17 @@ class ClientSession:
         positions = self.broker.positions()
         stats = self.journal.day_stats(trading_day(self.clock))
 
+        # Read once per cycle, not per candidate: it is one fact about the market
+        # and re-reading it mid-loop could gate two candidates differently.
+        regime = self.market_regime()
+        report.regime = regime
+
         candidates = self.scout.scan()
         report.candidates = len(candidates)
 
         for candidate in candidates:
             decision: RiskDecision = self.risk.evaluate(
-                candidate, account, positions, stats
+                candidate, account, positions, stats, regime
             )
             if not decision.approved:
                 report.rejections.append((candidate.symbol, decision.reasons))

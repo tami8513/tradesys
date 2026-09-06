@@ -16,6 +16,8 @@ from tradesys.core.models import (
     Position,
 )
 from tradesys.core.tenancy import TenantContext
+from tradesys.data.earnings import EarningsCalendar, NullEarningsCalendar
+from tradesys.data.regime import MarketRegime
 from tradesys.persistence.journal import Journal
 
 _ORDER_NAMESPACE = uuid.UUID("6f4d1e6a-2a1e-4f6d-9c2b-0f5a8c9d3e11")
@@ -64,9 +66,13 @@ class RiskManager(Agent):
         profile: ClientProfile,
         journal: Journal,
         clock: Clock | None = None,
+        earnings: EarningsCalendar | None = None,
     ) -> None:
         super().__init__(tenant, profile, clock)
         self._journal = journal
+        # Defaults to "unknown for everything", which is inert while the earnings
+        # filter is off and blocking once it is switched on without a data source.
+        self._earnings = earnings or NullEarningsCalendar()
 
     # -------------------------------------------------------------- portfolio
 
@@ -117,11 +123,26 @@ class RiskManager(Agent):
         account: AccountSnapshot,
         positions: Sequence[Position],
         stats: DayStats,
+        regime: MarketRegime | None = None,
     ) -> RiskDecision:
+        """Gate one candidate.
+
+        `regime` is passed in rather than fetched so this class stays free of I/O
+        and non-determinism. None means the regime could not be read, which is
+        treated as blocking for regime-gated setups — see _regime_reason.
+        """
         self.tenant.assert_owns(candidate)
         self.tenant.assert_owns(account)
         limits = self.profile.risk
         reasons: list[str] = []
+
+        earnings_reason = self._earnings_reason(candidate)
+        if earnings_reason:
+            reasons.append(earnings_reason)
+
+        regime_reason = self._regime_reason(candidate, regime)
+        if regime_reason:
+            reasons.append(regime_reason)
 
         entry = self.profile.entry_for(candidate.symbol)
         if entry is None:
@@ -201,6 +222,64 @@ class RiskManager(Agent):
             risk_amount=risk_amount,
             order=order,
         )
+
+    # ------------------------------------------------------- external filters
+
+    def _earnings_reason(self, candidate: Candidate) -> str | None:
+        """Block entries too close to a scheduled report.
+
+        Unknown earnings dates block rather than pass. The reason this filter was
+        switched on is that a gap can jump the stop; not knowing whether a report
+        is due tomorrow is exactly the state it exists to prevent. The rejection
+        says so explicitly, so a missing calendar is loud rather than silent.
+        """
+        window = self.profile.risk.avoid_earnings_within_days
+        if window is None:
+            return None
+
+        today = trading_day(self.clock)
+        if not self._earnings.is_known(candidate.symbol):
+            return (
+                f"no earnings coverage for {candidate.symbol} and the earnings "
+                f"filter is on ({window}d) — add it to the calendar to trade this "
+                f"name (an empty list means 'never reports', e.g. an ETF)"
+            )
+
+        next_report = self._earnings.next_earnings(candidate.symbol, today)
+        if next_report is None:
+            # Covered by the calendar with nothing scheduled: an ETF, an index, or
+            # a name whose next report is beyond the horizon. Nothing to avoid.
+            return None
+
+        days = (next_report - today).days
+        if days <= window:
+            return (
+                f"{candidate.symbol} reports in {days}d ({next_report.isoformat()}), "
+                f"inside the {window}d earnings window — an ATR stop cannot hold "
+                f"through a gap"
+            )
+        return None
+
+    def _regime_reason(
+        self, candidate: Candidate, regime: MarketRegime | None
+    ) -> str | None:
+        """Block regime-gated setups while the broad market is risk-off."""
+        blocked = self.profile.risk.regime_blocked_setups
+        if not blocked or candidate.setup not in blocked:
+            return None
+
+        limits = self.profile.risk
+        if regime is None:
+            return (
+                f"market regime unavailable ({limits.regime_symbol}) and "
+                f"{candidate.setup.value} is regime-gated"
+            )
+        if not regime.risk_on:
+            return (
+                f"{candidate.setup.value} blocked in a risk-off market: "
+                f"{regime.describe()}"
+            )
+        return None
 
     # ---------------------------------------------------------------- sizing
 

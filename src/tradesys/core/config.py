@@ -19,6 +19,8 @@ class Settings:
     clients_dir: Path
     data_dir: Path
     memory_backend: str = "local"          # "local" | "chroma"
+    earnings_file: Path | None = None      # operator-maintained earnings calendar
+    finnhub_api_key: str = ""              # optional vendor earnings feed
     allow_live_trading: bool = False       # second lock on top of the per-client flag
     log_level: str = "INFO"
 
@@ -29,6 +31,10 @@ class Settings:
             clients_dir=Path(os.getenv("TRADESYS_CLIENTS_DIR", base / "clients")),
             data_dir=Path(os.getenv("TRADESYS_DATA_DIR", base / "var")),
             memory_backend=os.getenv("TRADESYS_MEMORY_BACKEND", "local"),
+            earnings_file=Path(
+                os.getenv("TRADESYS_EARNINGS_FILE", base / "earnings.yaml")
+            ),
+            finnhub_api_key=os.getenv("TRADESYS_FINNHUB_API_KEY", ""),
             allow_live_trading=_flag("TRADESYS_ALLOW_LIVE_TRADING", False),
             log_level=os.getenv("TRADESYS_LOG_LEVEL", "INFO"),
         )
