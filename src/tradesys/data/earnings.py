@@ -18,23 +18,46 @@ Manager treats as a blocking condition rather than an all-clear.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Protocol
 
 
+@dataclass(frozen=True, slots=True)
+class EarningsLookup:
+    """The three states this question actually has.
+
+    A plain `date | None` conflates "an ETF that never reports" with "a symbol
+    nobody entered". Under a fail-closed filter that ambiguity makes every ETF
+    permanently untradeable, so coverage is carried explicitly.
+    """
+
+    covered: bool
+    next_date: date | None = None
+
+    @classmethod
+    def unknown(cls) -> "EarningsLookup":
+        """Not covered, or the feed could not answer. Blocks entries."""
+        return cls(covered=False)
+
+    @classmethod
+    def none_scheduled(cls) -> "EarningsLookup":
+        """Covered, nothing upcoming — an ETF, an index, or a quiet period."""
+        return cls(covered=True)
+
+    @classmethod
+    def scheduled(cls, when: date) -> "EarningsLookup":
+        return cls(covered=True, next_date=when)
+
+
 class EarningsCalendar(Protocol):
-    def next_earnings(self, symbol: str, on_or_after: date) -> date | None:
-        """Next scheduled report on or after the given date, else None."""
-        ...
+    def lookup(self, symbol: str, on_or_after: date) -> EarningsLookup:
+        """Coverage and next report in one call.
 
-    def is_known(self, symbol: str) -> bool:
-        """Whether this symbol is covered by the calendar at all.
-
-        Needed because `next_earnings` returning None is ambiguous: an ETF that
-        never reports and a stock nobody entered look identical. With a
-        fail-closed filter that ambiguity makes every ETF permanently
-        untradeable, so coverage is asked separately from scheduling.
+        One call, not two: a vendor-backed calendar would otherwise make a
+        network round trip per question, and answering them at different dates
+        would cache under different keys.
         """
         ...
 
@@ -95,14 +118,17 @@ class StaticEarningsCalendar:
         self._mtime = mtime
         return self._cache
 
-    def next_earnings(self, symbol: str, on_or_after: date) -> date | None:
-        entries = self._load().get(symbol.upper())
-        if not entries:
-            return None
-        return next((d for d in entries if d >= on_or_after), None)
-
-    def is_known(self, symbol: str) -> bool:
-        return symbol.upper() in self._load()
+    def lookup(self, symbol: str, on_or_after: date) -> EarningsLookup:
+        calendar = self._load()
+        key = symbol.upper()
+        if key not in calendar:
+            return EarningsLookup.unknown()
+        upcoming = next((d for d in calendar[key] if d >= on_or_after), None)
+        return (
+            EarningsLookup.scheduled(upcoming)
+            if upcoming
+            else EarningsLookup.none_scheduled()
+        )
 
     def known_symbols(self) -> set[str]:
         return set(self._load())
@@ -125,7 +151,7 @@ class FinnhubEarningsCalendar:
         self._horizon_days = horizon_days
         self._cache: dict[tuple[str, str], list[date]] = {}
 
-    def next_earnings(self, symbol: str, on_or_after: date) -> date | None:
+    def lookup(self, symbol: str, on_or_after: date) -> EarningsLookup:
         from datetime import timedelta
 
         key = (symbol.upper(), on_or_after.strftime("%Y-%m"))
@@ -146,9 +172,10 @@ class FinnhubEarningsCalendar:
                 response.raise_for_status()
                 payload = response.json()
             except Exception:
-                # Do not cache a failure: an outage should be retried, not frozen
-                # into a month-long "unknown" for this symbol.
-                return None
+                # Do not cache a failure: an outage should be retried next cycle,
+                # not frozen into a month-long "unknown" for this symbol. Until
+                # then this reads as uncovered, which blocks rather than passes.
+                return EarningsLookup.unknown()
 
             dates: list[date] = []
             for item in payload.get("earningsCalendar") or []:
@@ -157,33 +184,20 @@ class FinnhubEarningsCalendar:
                     dates.append(parsed)
             self._cache[key] = sorted(dates)
 
-        return next((d for d in self._cache[key] if d >= on_or_after), None)
-
-    def is_known(self, symbol: str) -> bool:
-        """True once the vendor has answered for this symbol this month.
-
-        A failed request is not cached, so an outage reads as unknown and blocks
-        rather than quietly passing.
-        """
-        from datetime import date as _date
-
-        today = _date.today()
-        key = (symbol.upper(), today.strftime("%Y-%m"))
-        if key not in self._cache:
-            self.next_earnings(symbol, today)
-        return key in self._cache
+        upcoming = next((d for d in self._cache[key] if d >= on_or_after), None)
+        return (
+            EarningsLookup.scheduled(upcoming)
+            if upcoming
+            else EarningsLookup.none_scheduled()
+        )
 
 
 class NullEarningsCalendar:
     """Answers 'unknown' for everything. The default when no source is configured."""
 
-    def next_earnings(self, symbol: str, on_or_after: date) -> date | None:
+    def lookup(self, symbol: str, on_or_after: date) -> EarningsLookup:
         del symbol, on_or_after
-        return None
-
-    def is_known(self, symbol: str) -> bool:
-        del symbol
-        return False
+        return EarningsLookup.unknown()
 
 
 def _coerce_date(value: object) -> date | None:

@@ -17,7 +17,11 @@ from tradesys.agents.risk_manager import RiskManager
 from tradesys.clients.profile import BrokerConfig, ClientProfile, RiskProfile, WatchlistEntry
 from tradesys.core.enums import SetupType
 from tradesys.core.tenancy import TenantContext
-from tradesys.data.earnings import NullEarningsCalendar, StaticEarningsCalendar
+from tradesys.data.earnings import (
+    EarningsLookup,
+    NullEarningsCalendar,
+    StaticEarningsCalendar,
+)
 from tradesys.data.regime import MarketRegime, assess_regime
 from tradesys.data.market_data import SyntheticMarketData
 from tradesys.persistence.journal import Journal
@@ -29,14 +33,14 @@ class FakeCalendar:
     def __init__(self, dates: dict[str, date | None] | None = None) -> None:
         self._dates = dates or {}
 
-    def next_earnings(self, symbol: str, on_or_after: date) -> date | None:
-        found = self._dates.get(symbol.upper())
+    def lookup(self, symbol: str, on_or_after: date) -> EarningsLookup:
+        key = symbol.upper()
+        if key not in self._dates:
+            return EarningsLookup.unknown()
+        found = self._dates[key]
         if found is None or found < on_or_after:
-            return None
-        return found
-
-    def is_known(self, symbol: str) -> bool:
-        return symbol.upper() in self._dates
+            return EarningsLookup.none_scheduled()
+        return EarningsLookup.scheduled(found)
 
 
 def build_profile(
@@ -286,22 +290,22 @@ def test_static_calendar_reads_and_reloads(tmp_path):
     path.write_text("RIVN: [2026-09-15, 2026-12-08]\nKULR: 2026-09-22\n", encoding="utf-8")
     calendar = StaticEarningsCalendar(path)
 
-    assert calendar.next_earnings("RIVN", date(2026, 9, 1)) == date(2026, 9, 15)
-    assert calendar.next_earnings("RIVN", date(2026, 10, 1)) == date(2026, 12, 8)
-    assert calendar.next_earnings("kulr", date(2026, 9, 1)) == date(2026, 9, 22)
-    assert calendar.next_earnings("SPCE", date(2026, 9, 1)) is None
+    assert calendar.lookup("RIVN", date(2026, 9, 1)).next_date == date(2026, 9, 15)
+    assert calendar.lookup("RIVN", date(2026, 10, 1)).next_date == date(2026, 12, 8)
+    assert calendar.lookup("kulr", date(2026, 9, 1)).next_date == date(2026, 9, 22)
+    assert not calendar.lookup("SPCE", date(2026, 9, 1)).covered
 
 
 def test_malformed_calendar_reports_unknown_not_clear(tmp_path):
     """A broken file must not read as 'no earnings scheduled'."""
     path = tmp_path / "earnings.yaml"
     path.write_text("this: [is: not: valid: yaml", encoding="utf-8")
-    assert StaticEarningsCalendar(path).next_earnings("RIVN", date(2026, 9, 1)) is None
+    assert not StaticEarningsCalendar(path).lookup("RIVN", date(2026, 9, 1)).covered
 
 
 def test_missing_calendar_file_is_not_an_error(tmp_path):
     calendar = StaticEarningsCalendar(tmp_path / "nope.yaml")
-    assert calendar.next_earnings("RIVN", date(2026, 9, 1)) is None
+    assert not calendar.lookup("RIVN", date(2026, 9, 1)).covered
 
 
 def test_static_calendar_separates_never_reports_from_unknown(tmp_path):
@@ -309,6 +313,126 @@ def test_static_calendar_separates_never_reports_from_unknown(tmp_path):
     path.write_text("RIVN: [2026-11-04]\nSQQQ: []\n", encoding="utf-8")
     calendar = StaticEarningsCalendar(path)
 
-    assert calendar.is_known("RIVN") and calendar.is_known("SQQQ")
-    assert not calendar.is_known("KULR")
-    assert calendar.next_earnings("SQQQ", date(2026, 9, 1)) is None
+    assert calendar.lookup("RIVN", date(2026, 9, 1)).covered
+    assert calendar.lookup("SQQQ", date(2026, 9, 1)).covered
+    assert not calendar.lookup("KULR", date(2026, 9, 1)).covered
+    assert calendar.lookup("SQQQ", date(2026, 9, 1)).next_date is None
+
+
+# ------------------------------------------------------------------- finnhub
+
+class FakeResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+        self.text = "fake"
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self._payload
+
+
+def install_fake_httpx(monkeypatch, responder):
+    """Swap httpx.get for a recorder so the vendor client can be tested offline."""
+    import types
+
+    calls: list[dict] = []
+
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        calls.append({"url": url, "params": dict(params or {})})
+        return responder(params or {})
+
+    module = types.ModuleType("httpx")
+    module.get = fake_get
+    monkeypatch.setitem(__import__("sys").modules, "httpx", module)
+    return calls
+
+
+def test_finnhub_parses_a_real_shaped_payload(monkeypatch):
+    from tradesys.data.earnings import FinnhubEarningsCalendar
+
+    payload = {
+        "earningsCalendar": [
+            {"date": "2026-11-04", "symbol": "RIVN", "epsEstimate": -0.65},
+            {"date": "2027-02-19", "symbol": "RIVN", "epsEstimate": -0.55},
+        ]
+    }
+    install_fake_httpx(monkeypatch, lambda params: FakeResponse(payload))
+
+    calendar = FinnhubEarningsCalendar("fake-key-for-tests")
+    found = calendar.lookup("RIVN", date(2026, 11, 1))
+
+    assert found.covered
+    assert found.next_date == date(2026, 11, 4)
+
+
+def test_finnhub_empty_result_means_covered_not_unknown(monkeypatch):
+    """A successful 'nothing scheduled' must not block the symbol."""
+    from tradesys.data.earnings import FinnhubEarningsCalendar
+
+    install_fake_httpx(monkeypatch, lambda params: FakeResponse({"earningsCalendar": []}))
+
+    found = FinnhubEarningsCalendar("fake-key-for-tests").lookup("SQQQ", date(2026, 11, 1))
+    assert found.covered
+    assert found.next_date is None
+
+
+def test_finnhub_outage_reads_as_unknown_and_is_not_cached(monkeypatch):
+    """An outage must block, and must be retried rather than frozen for a month."""
+    from tradesys.data.earnings import FinnhubEarningsCalendar
+
+    state = {"fail": True}
+
+    def responder(params):
+        if state["fail"]:
+            raise RuntimeError("connection reset")
+        return FakeResponse({"earningsCalendar": [{"date": "2026-11-04"}]})
+
+    calls = install_fake_httpx(monkeypatch, responder)
+    calendar = FinnhubEarningsCalendar("fake-key-for-tests")
+
+    assert not calendar.lookup("RIVN", date(2026, 11, 1)).covered
+
+    state["fail"] = False
+    recovered = calendar.lookup("RIVN", date(2026, 11, 1))
+    assert recovered.covered and recovered.next_date == date(2026, 11, 4)
+    assert len(calls) == 2  # retried, not served from a poisoned cache
+
+
+def test_finnhub_caches_within_a_month(monkeypatch):
+    from tradesys.data.earnings import FinnhubEarningsCalendar
+
+    calls = install_fake_httpx(
+        monkeypatch, lambda params: FakeResponse({"earningsCalendar": [{"date": "2026-11-04"}]})
+    )
+    calendar = FinnhubEarningsCalendar("fake-key-for-tests")
+
+    calendar.lookup("RIVN", date(2026, 11, 1))
+    calendar.lookup("RIVN", date(2026, 11, 20))
+    assert len(calls) == 1
+
+    calendar.lookup("RIVN", date(2026, 12, 1))
+    assert len(calls) == 2
+
+
+def test_finnhub_never_puts_the_key_in_the_url_path(monkeypatch):
+    """The token belongs in params, where it will not land in a path-based log."""
+    from tradesys.data.earnings import FinnhubEarningsCalendar
+
+    calls = install_fake_httpx(
+        monkeypatch, lambda params: FakeResponse({"earningsCalendar": []})
+    )
+    FinnhubEarningsCalendar("super-secret-key").lookup("RIVN", date(2026, 11, 1))
+
+    assert "super-secret-key" not in calls[0]["url"]
+    assert calls[0]["params"]["token"] == "super-secret-key"
+
+
+def test_finnhub_requires_a_key():
+    from tradesys.data.earnings import FinnhubEarningsCalendar
+
+    with pytest.raises(ValueError):
+        FinnhubEarningsCalendar("")

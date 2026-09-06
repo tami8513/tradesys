@@ -208,6 +208,61 @@ it, `"הימנע מפריצות"` degraded to an advisory NOTE and the hard veto
 fired — the whole feedback loop would have been decorative in a Hebrew UI. Covered by
 `test_hebrew_avoid_feedback_becomes_a_binding_veto`.
 
+## Risk filters
+
+Two deterministic filters, both opt-in per tenant and both **fail closed** — when
+their data is missing they block the affected entries rather than passing silently.
+A risk control that no-ops when its feed is down is worse than none, because it is
+trusted.
+
+### Earnings gap
+
+```yaml
+risk:
+  avoid_earnings_within_days: 3
+```
+
+Every stop here is ATR-based, and an ATR stop does not survive an overnight gap:
+the position opens past the stop and the monitor sells at the open, so the realized
+loss far exceeds what the Risk Manager sized for. This blocks entries near a report.
+
+Data comes from one of two places:
+
+| Source | Setup |
+|---|---|
+| `earnings.yaml` | Hand-maintained. Default. |
+| Finnhub | Set `TRADESYS_FINNHUB_API_KEY`; overrides the file. |
+
+In the file, an **empty list means "never reports"** (an ETF or index) and passes
+the filter. A symbol *absent* from the file is uncovered and is blocked:
+
+```yaml
+RIVN: [2026-11-04, 2027-02-19]
+SQQQ: []      # ETF — no earnings, tradeable
+```
+
+Check coverage before wondering why nothing trades:
+
+```bash
+tradesys earnings --client tal_dahan
+```
+
+### Market regime
+
+```yaml
+risk:
+  regime_symbol: SPY
+  regime_sma_period: 200
+  regime_blocked_setups: [breakout]
+```
+
+Only the listed setups are gated; the rest of the book trades normally. Most failed
+breakouts happen in falling markets, so skipping them while the index is below its
+long average removes a large share of losses without predicting anything.
+
+The regime is read once per cycle and passed into `RiskManager.evaluate()` as a
+fact, keeping that class free of I/O and non-determinism.
+
 ## Onboarding a new client
 
 Add `clients/<client_id>.yaml`. That is the whole procedure — no code changes. The

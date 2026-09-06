@@ -4,6 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from tradesys.core.clock import trading_day
 from tradesys.core.config import Settings
 from tradesys.core.errors import TradesysError
 from tradesys.orchestration.engine import TradingSystem
@@ -124,6 +125,51 @@ def cmd_recall(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_earnings(args: argparse.Namespace) -> int:
+    """Show earnings coverage for a client's watchlist.
+
+    Worth having because the filter fails closed: an uncovered symbol is silently
+    untradeable, and without this you would only notice as a rejection reason
+    buried in a cycle report.
+    """
+    system = _system(args)
+    session = system.for_client(args.client)
+    try:
+        window = session.profile.risk.avoid_earnings_within_days
+        if window is None:
+            print(f"{session.client_id}: earnings filter is off")
+            return 0
+
+        calendar = system._earnings()
+        today = trading_day(session.clock)
+        print(f"{session.client_id}: earnings filter on, window {window}d, as of {today}")
+
+        blocked = 0
+        for symbol in session.profile.symbols:
+            found = calendar.lookup(symbol, today)
+            if not found.covered:
+                state, note = "UNCOVERED", "add to the calendar — currently blocked"
+                blocked += 1
+            elif found.next_date is None:
+                state, note = "clear", "no report scheduled"
+            else:
+                days = (found.next_date - today).days
+                if days <= window:
+                    state = "BLOCKED"
+                    note = f"reports in {days}d ({found.next_date})"
+                    blocked += 1
+                else:
+                    state, note = "clear", f"next report {found.next_date} ({days}d)"
+            print(f"  {symbol:<8} {state:<11} {note}")
+
+        if blocked:
+            total = len(session.profile.symbols)
+            print(f"\n{blocked} of {total} symbol(s) cannot be entered right now")
+        return 0
+    finally:
+        session.close()
+
+
 def cmd_journal(args: argparse.Namespace) -> int:
     session = _system(args).for_client(args.client)
     try:
@@ -183,6 +229,12 @@ def build_parser() -> argparse.ArgumentParser:
     recall.add_argument("--k", type=int, default=5)
     recall.add_argument("query")
     recall.set_defaults(func=cmd_recall)
+
+    earnings = sub.add_parser(
+        "earnings", help="show earnings coverage for a client's watchlist"
+    )
+    earnings.add_argument("--client", required=True)
+    earnings.set_defaults(func=cmd_earnings)
 
     journal = sub.add_parser("journal", help="show open trades and per-setup stats")
     journal.add_argument("--client", required=True)

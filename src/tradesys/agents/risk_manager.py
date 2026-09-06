@@ -238,20 +238,21 @@ class RiskManager(Agent):
             return None
 
         today = trading_day(self.clock)
-        if not self._earnings.is_known(candidate.symbol):
+        found = self._earnings.lookup(candidate.symbol, today)
+
+        if not found.covered:
             return (
                 f"no earnings coverage for {candidate.symbol} and the earnings "
                 f"filter is on ({window}d) — add it to the calendar to trade this "
                 f"name (an empty list means 'never reports', e.g. an ETF)"
             )
-
-        next_report = self._earnings.next_earnings(candidate.symbol, today)
-        if next_report is None:
-            # Covered by the calendar with nothing scheduled: an ETF, an index, or
-            # a name whose next report is beyond the horizon. Nothing to avoid.
+        if found.next_date is None:
+            # Covered with nothing scheduled: an ETF, an index, or a name whose
+            # next report is beyond the horizon. Nothing to avoid.
             return None
 
-        days = (next_report - today).days
+        days = (found.next_date - today).days
+        next_report = found.next_date
         if days <= window:
             return (
                 f"{candidate.symbol} reports in {days}d ({next_report.isoformat()}), "
