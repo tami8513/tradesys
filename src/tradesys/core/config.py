@@ -5,6 +5,22 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def _load_dotenv(env_path: Path) -> None:
+    """Load .env into the process environment, without overriding what is already set.
+
+    Optional dependency: if python-dotenv is not installed, .env is silently
+    skipped rather than raising — a real environment variable (Docker, systemd,
+    Streamlit Cloud secrets) always works with or without this file.
+    """
+    if not env_path.exists():
+        return
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    load_dotenv(env_path, override=False)
+
+
 def _flag(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -27,6 +43,7 @@ class Settings:
     @classmethod
     def from_env(cls, root: Path | None = None) -> "Settings":
         base = root or Path(os.getenv("TRADESYS_ROOT", Path.cwd()))
+        _load_dotenv(base / ".env")
         return cls(
             clients_dir=Path(os.getenv("TRADESYS_CLIENTS_DIR", base / "clients")),
             data_dir=Path(os.getenv("TRADESYS_DATA_DIR", base / "var")),
