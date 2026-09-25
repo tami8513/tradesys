@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import random
+import re
 from datetime import datetime, timedelta, timezone
-from typing import Mapping, Protocol, Sequence
+from typing import Callable, Mapping, Protocol, Sequence
 
 from tradesys.core.models import Bar
 
@@ -76,8 +77,8 @@ class SyntheticMarketData:
 class AlpacaMarketData:
     """Read-only market data via the Alpaca Data API.
 
-    Credentials are passed in per tenant; this object never reads the environment,
-    so a data provider built for one client can never authenticate as another.
+    Credentials are passed in explicitly; this object never reads the environment,
+    so a provider built with one set of keys can never authenticate with another.
     """
 
     def __init__(
@@ -88,6 +89,7 @@ class AlpacaMarketData:
         base_url: str = "https://data.alpaca.markets",
         feed: str = "iex",
         timeout: float = 10.0,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
         self._headers = {
             "APCA-API-KEY-ID": key_id,
@@ -96,6 +98,7 @@ class AlpacaMarketData:
         self._base_url = base_url.rstrip("/")
         self._feed = feed
         self._timeout = timeout
+        self._now = now or (lambda: datetime.now(timezone.utc))
 
     def _get(self, path: str, params: Mapping[str, object]) -> dict:
         try:
@@ -112,17 +115,62 @@ class AlpacaMarketData:
         return response.json()
 
     def history(self, symbol: str, *, timeframe: str, limit: int) -> list[Bar]:
-        payload = self._get(
-            f"/v2/stocks/{symbol.upper()}/bars",
-            {"timeframe": timeframe, "limit": limit, "feed": self._feed},
-        )
-        return [_parse_bar(item) for item in payload.get("bars") or []]
+        """The most recent `limit` bars.
+
+        Alpaca needs an explicit `start`: without one it returns only today's bars,
+        and the Scout (which needs 60+) would skip every symbol without an error.
+        With a `start`, bars come back oldest-first from that date, so `limit` must
+        not be sent to the API — it would return the oldest bars, not the latest.
+        The window is fetched in full and trimmed here instead.
+        """
+        start = self._now() - timedelta(days=_lookback_days(timeframe, limit))
+        params: dict[str, object] = {
+            "timeframe": timeframe,
+            "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "feed": self._feed,
+            "adjustment": "split",
+            "limit": 10000,
+        }
+
+        bars: list[Bar] = []
+        while True:
+            payload = self._get(f"/v2/stocks/{symbol.upper()}/bars", params)
+            bars.extend(_parse_bar(item) for item in payload.get("bars") or [])
+            token = payload.get("next_page_token")
+            if not token:
+                break
+            params = {**params, "page_token": token}
+
+        return bars[-limit:]
 
     def last_price(self, symbol: str) -> float:
         payload = self._get(
             f"/v2/stocks/{symbol.upper()}/trades/latest", {"feed": self._feed}
         )
         return float(payload["trade"]["p"])
+
+
+def _lookback_days(timeframe: str, limit: int) -> int:
+    """Calendar days that comfortably contain `limit` bars of `timeframe`.
+
+    Markets trade ~252 of 365 days and ~6.5 of 24 hours, so a naive
+    limit-days window falls short; the factors below leave headroom for
+    holidays and half-days.
+    """
+    match = re.fullmatch(r"(\d*)\s*(Min|Hour|Day|Week|Month)", timeframe)
+    if not match:
+        raise ValueError(f"unsupported timeframe {timeframe!r}")
+    size = int(match.group(1) or 1)
+    unit = match.group(2)
+    bars_per_day = {
+        "Min": 390 / size,
+        "Hour": 6.5 / size,
+        "Day": 1 / size,
+        "Week": 1 / (5 * size),
+        "Month": 1 / (21 * size),
+    }[unit]
+    trading_days = limit / bars_per_day
+    return int(trading_days * 1.6) + 10
 
 
 def _parse_bar(item: Mapping[str, object]) -> Bar:

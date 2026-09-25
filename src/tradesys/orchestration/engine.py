@@ -111,14 +111,38 @@ class TradingSystem:
         return StaticEarningsCalendar(self.settings.earnings_file)
 
     def _market_data(self, profile: ClientProfile) -> MarketDataProvider:
+        """Where a tenant's prices come from.
+
+        Paper tenants keep their balance in our own PaperBroker ledger either way;
+        what changes with platform data keys is only the price feed. That is the
+        demo a prospect should see: real market moves, simulated money.
+        """
         if self._market_data_override is not None:
             return self._market_data_override
-        if profile.broker.name == "paper":
-            return SyntheticMarketData()
+
         from tradesys.data.market_data import AlpacaMarketData
 
+        if profile.broker.name == "paper":
+            if self.settings.market_data_key_id and self.settings.market_data_secret_key:
+                return AlpacaMarketData(
+                    self.settings.market_data_key_id,
+                    self.settings.market_data_secret_key,
+                    feed=self.settings.market_data_feed,
+                )
+            return SyntheticMarketData()
+
         credentials = self.secrets.broker_credentials(profile)
-        return AlpacaMarketData(credentials.key_id, credentials.secret_key)
+        return AlpacaMarketData(
+            credentials.key_id, credentials.secret_key, feed=self.settings.market_data_feed
+        )
+
+    def market_data_source(self) -> str:
+        """Human-readable label of the paper-tenant price feed, for the UI."""
+        if self._market_data_override is not None:
+            return type(self._market_data_override).__name__
+        if self.settings.market_data_key_id and self.settings.market_data_secret_key:
+            return f"alpaca:{self.settings.market_data_feed}"
+        return "synthetic"
 
     def _broker(
         self,

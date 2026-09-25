@@ -37,6 +37,11 @@ class Settings:
     memory_backend: str = "local"          # "local" | "chroma"
     earnings_file: Path | None = None      # operator-maintained earnings calendar
     finnhub_api_key: str = ""              # optional vendor earnings feed
+    # Platform-level market data. When set, demo/paper tenants trade on live
+    # prices while their balance stays in our own paper ledger.
+    market_data_key_id: str = ""
+    market_data_secret_key: str = ""
+    market_data_feed: str = "iex"          # iex (free) | sip (paid, full tape)
     allow_live_trading: bool = False       # second lock on top of the per-client flag
     log_level: str = "INFO"
 
@@ -52,6 +57,9 @@ class Settings:
                 os.getenv("TRADESYS_EARNINGS_FILE", base / "earnings.yaml")
             ),
             finnhub_api_key=os.getenv("TRADESYS_FINNHUB_API_KEY", ""),
+            market_data_key_id=os.getenv("TRADESYS_MARKET_DATA__KEY_ID", ""),
+            market_data_secret_key=os.getenv("TRADESYS_MARKET_DATA__SECRET_KEY", ""),
+            market_data_feed=os.getenv("TRADESYS_MARKET_DATA__FEED", "iex"),
             allow_live_trading=_flag("TRADESYS_ALLOW_LIVE_TRADING", False),
             log_level=os.getenv("TRADESYS_LOG_LEVEL", "INFO"),
         )

@@ -252,6 +252,17 @@ def tenant_dir(client_id: str) -> Path:
     return Settings.from_env(ROOT).data_dir / client_id
 
 
+def price_feed_label() -> str:
+    """Where demo prices come from, in words a client reads in a disclosure.
+
+    This text sits inside the simulated-performance banner, so it must match the
+    actual feed: "simulated market data" is false the moment live keys are set.
+    """
+    if get_system().market_data_source().startswith("alpaca"):
+        return "נתוני שוק אמיתיים בזמן אמת"
+    return "נתוני שוק מדומים"
+
+
 # --------------------------------------------------------------- מחזור חיים
 
 def automation_path(session) -> Path:
@@ -381,8 +392,8 @@ def login_screen() -> None:
     with middle:
         st.markdown(
             '<div class="ts-demo-bar">רוצה לראות את המערכת פועלת לפני שנרשמים? '
-            "מצב ההדגמה מריץ את המנוע האמיתי על נתוני שוק מדומים — "
-            "ללא הרשמה וללא חיבור ברוקר.</div>",
+            f"מצב ההדגמה מריץ את המנוע האמיתי על {price_feed_label()}, "
+            "עם כסף מדומה — ללא הרשמה וללא חיבור ברוקר.</div>",
             unsafe_allow_html=True,
         )
         if st.button("▶ כניסה למצב הדגמה", use_container_width=True):
@@ -1003,7 +1014,7 @@ def tab_broker(client_id: str, demo: bool = False) -> None:
     if demo:
         upgrade_cta(
             "חיבור ברוקר זמין ללקוחות רשומים",
-            "במצב הדגמה המערכת רצה על נתוני שוק מדומים מול ברוקר נייר. "
+            f"במצב הדגמה המערכת רצה על {price_feed_label()} עם כסף מדומה. "
             "חיבור חשבון מסחר אמיתי נפתח לאחר פתיחת חשבון ואישור.",
             key="cta_broker",
         )
@@ -1420,7 +1431,7 @@ def client_portal(client_id: str, demo: bool = False) -> None:
         st.markdown(
             '<div class="ts-demo-bar">▶ מצב הדגמה · '
             "כל המספרים במסך זה הם תוצאות סימולציה שהופקו על ידי מנוע מסחר בחשבון "
-            "נייר על נתוני שוק מדומים. לא נשלחו פקודות אמיתיות ולא הועמד הון בסיכון. "
+            f"נייר על {price_feed_label()}. לא נשלחו פקודות אמיתיות ולא הועמד הון בסיכון. "
             "לתוצאות סימולציה יש מגבלות מובנות והן אינן מייצגות מסחר בפועל ואינן "
             "מעידות על תוצאות עתידיות.</div>",
             unsafe_allow_html=True,
