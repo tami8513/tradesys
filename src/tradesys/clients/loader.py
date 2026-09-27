@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from tradesys.clients.profile import (
+    CAPITAL_TRACKS,
     BrokerConfig,
     ClientProfile,
     RiskProfile,
@@ -44,6 +45,21 @@ def _setups(values: Any, path: Path) -> frozenset[SetupType]:
         raise ConfigError(f"{path.name}: unknown setup type ({exc})") from exc
 
 
+def _capital_floor(raw_risk: Mapping[str, Any], path: Path) -> float | None:
+    """An explicit capital_floor_pct wins; otherwise a named capital_track."""
+    if raw_risk.get("capital_floor_pct") is not None:
+        return float(raw_risk["capital_floor_pct"])
+    track = raw_risk.get("capital_track")
+    if track is None:
+        return None
+    if track not in CAPITAL_TRACKS:
+        raise ConfigError(
+            f"{path.name}: unknown capital_track {track!r} "
+            f"(expected one of {sorted(CAPITAL_TRACKS)})"
+        )
+    return CAPITAL_TRACKS[track]
+
+
 def parse_profile(doc: Mapping[str, Any], path: Path) -> ClientProfile:
     """Validate an untrusted config document into a ClientProfile."""
     if not isinstance(doc, Mapping):
@@ -74,6 +90,11 @@ def parse_profile(doc: Mapping[str, Any], path: Path) -> ClientProfile:
             regime_symbol=str(raw_risk.get("regime_symbol", "SPY")),
             regime_sma_period=int(raw_risk.get("regime_sma_period", 200)),
             regime_blocked_setups=_setups(raw_risk.get("regime_blocked_setups"), path),
+            capital_floor_pct=_capital_floor(raw_risk, path),
+            floor_cushion_per_trade_pct=float(
+                raw_risk.get("floor_cushion_per_trade_pct", 20.0)
+            ),
+            floor_ratchet=bool(raw_risk.get("floor_ratchet", False)),
         )
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"{path.name}: invalid risk block ({exc})") from exc

@@ -13,6 +13,7 @@ from tradesys.brokers.paper import PaperBroker
 from tradesys.clients.loader import ClientRegistry
 from tradesys.clients.profile import ClientProfile
 from tradesys.clients.secrets import EnvSecretResolver, SecretResolver
+from tradesys.clients.tracks import apply_track, read_track
 from tradesys.core.clock import Clock, SystemClock, trading_day
 from tradesys.core.config import Settings
 from tradesys.core.errors import ConfigError
@@ -159,8 +160,12 @@ class TradingSystem:
         raise ConfigError(f"unknown broker {profile.broker.name!r}")
 
     def for_client(self, client_id: str) -> "ClientSession":
-        profile = self.registry.load(client_id)
         tenant = self.tenant(client_id)
+        # The client's own track choice overrides only the floor; every other
+        # limit stays as the operator set it in the profile YAML.
+        profile = apply_track(
+            self.registry.load(client_id), read_track(tenant.data_dir)
+        )
         journal = Journal(tenant)
         memory = self._memory(tenant)
         market_data = self._market_data(profile)

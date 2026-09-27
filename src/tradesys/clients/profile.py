@@ -7,6 +7,14 @@ from tradesys.core.errors import ConfigError
 from tradesys.core.identity import validate_client_id
 
 
+CAPITAL_TRACKS: dict[str, float] = {
+    "capital_preservation": 95.0,
+    "balanced": 90.0,
+    "growth": 80.0,
+}
+"""Named capital-floor presets a client chooses between. Value = floor %."""
+
+
 @dataclass(frozen=True, slots=True)
 class RiskProfile:
     """Hard limits for one tenant. Every field is enforced by the Risk Manager.
@@ -41,6 +49,26 @@ class RiskProfile:
     regime_sma_period: int = 200
     regime_blocked_setups: frozenset[SetupType] = frozenset()
 
+    # --- capital floor ------------------------------------------------------
+    # Equity the book should not fall below, as % of the capital base. Entries
+    # are sized so that even if every open stop is hit at once, equity stays
+    # above the floor. A gap past a stop can still breach it: this is a brake,
+    # not a guarantee. None disables the floor.
+    capital_floor_pct: float | None = None
+    # Capital the floor is measured against. Set when a client chooses a track,
+    # to their equity at that moment: measuring from an older, higher balance
+    # would put an account that is already down straight under its floor and
+    # lock it out of trading for good. None falls back to the first equity the
+    # journal recorded.
+    capital_floor_base: float | None = None
+    # Largest share of the remaining cushion (equity − floor − open risk) that
+    # a single new trade may put at risk. 20% means five consecutive full-size
+    # losses, not one, to reach the floor.
+    floor_cushion_per_trade_pct: float = 20.0
+    # Floor follows the equity peak instead of the starting capital, so gains
+    # are protected as well as the deposit.
+    floor_ratchet: bool = False
+
     def __post_init__(self) -> None:
         pcts = {
             "max_drawdown_pct": self.max_drawdown_pct,
@@ -66,6 +94,12 @@ class RiskProfile:
             raise ConfigError("regime_sma_period must be at least 2 bars")
         if self.regime_blocked_setups and not self.regime_symbol:
             raise ConfigError("regime_blocked_setups requires a regime_symbol")
+        if self.capital_floor_pct is not None and not 0 < self.capital_floor_pct < 100:
+            raise ConfigError("capital_floor_pct must be between 0 and 100 (exclusive)")
+        if self.capital_floor_base is not None and self.capital_floor_base <= 0:
+            raise ConfigError("capital_floor_base must be positive when set")
+        if not 0 < self.floor_cushion_per_trade_pct <= 100:
+            raise ConfigError("floor_cushion_per_trade_pct must be in (0, 100]")
 
 
 @dataclass(frozen=True, slots=True)

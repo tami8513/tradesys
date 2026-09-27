@@ -47,6 +47,39 @@ class PreflightResult:
     reason: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class FloorState:
+    """Where the book stands against its capital floor.
+
+    `available` is the cushion left after every open stop is assumed hit. New
+    entries only ever draw on that, which is what keeps the book above the floor
+    even in a worst case where all stops fire together.
+    """
+
+    base: float
+    floor: float
+    equity: float
+    open_risk: float
+    per_trade_pct: float
+
+    @property
+    def cushion(self) -> float:
+        return self.equity - self.floor
+
+    @property
+    def available(self) -> float:
+        return self.cushion - self.open_risk
+
+    @property
+    def per_trade_budget(self) -> float:
+        return max(0.0, self.available) * self.per_trade_pct / 100.0
+
+    @property
+    def worst_case_equity(self) -> float:
+        """Equity if every open stop were hit right now."""
+        return self.equity - self.open_risk
+
+
 class RiskManager(Agent):
     """Deterministic, rule-based gate that sits between the AI and the broker.
 
@@ -114,6 +147,27 @@ class RiskManager(Agent):
                 return PreflightResult(False, reason)
 
         return PreflightResult(True)
+
+    # ----------------------------------------------------------- capital floor
+
+    def floor_state(self, account: AccountSnapshot, stats: DayStats) -> FloorState | None:
+        """The book against its floor, or None when no floor is configured."""
+        limits = self.profile.risk
+        if limits.capital_floor_pct is None:
+            return None
+        if limits.floor_ratchet:
+            base = max(stats.peak_equity, account.equity, limits.capital_floor_base or 0.0)
+        elif limits.capital_floor_base is not None:
+            base = limits.capital_floor_base
+        else:
+            base = self._journal.capital_base() or account.equity
+        return FloorState(
+            base=base,
+            floor=base * limits.capital_floor_pct / 100.0,
+            equity=account.equity,
+            open_risk=self._journal.open_risk(),
+            per_trade_pct=limits.floor_cushion_per_trade_pct,
+        )
 
     # ------------------------------------------------------------- per-trade
 
@@ -186,10 +240,18 @@ class RiskManager(Agent):
                 f"{stats.trades_opened} trades today at limit {limits.max_trades_per_day}"
             )
 
+        floor = self.floor_state(account, stats)
+        if floor is not None and floor.per_trade_budget <= 0:
+            reasons.append(
+                f"at capital floor: equity {floor.equity:.2f}, floor {floor.floor:.2f}, "
+                f"{floor.open_risk:.2f} already at risk in open positions — no new "
+                f"entries until the cushion recovers"
+            )
+
         if reasons:
             return self._reject(candidate, reasons)
 
-        qty, risk_amount, sizing_reasons = self._size(candidate, account, entry)
+        qty, risk_amount, sizing_reasons = self._size(candidate, account, entry, floor)
         if qty < 1:
             return self._reject(candidate, sizing_reasons or ["position sizes to zero shares"])
 
@@ -289,12 +351,19 @@ class RiskManager(Agent):
         candidate: Candidate,
         account: AccountSnapshot,
         entry: WatchlistEntry | None,
+        floor: FloorState | None = None,
     ) -> tuple[int, float, list[str]]:
         """Volatility-based sizing, then every cap applied as a hard minimum."""
         limits = self.profile.risk
         notes: list[str] = []
 
         risk_budget = account.equity * (limits.risk_per_trade_pct / 100.0)
+        if floor is not None and floor.per_trade_budget < risk_budget:
+            notes.append(
+                f"risk budget reduced to {floor.per_trade_budget:.2f} by the capital "
+                f"floor ({floor.available:.2f} of cushion left above {floor.floor:.2f})"
+            )
+            risk_budget = floor.per_trade_budget
         qty = int(risk_budget // candidate.risk_per_share)
         if qty < 1:
             return 0, 0.0, [

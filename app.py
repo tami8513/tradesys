@@ -475,6 +475,19 @@ def login_screen() -> None:
 
 # -------------------------------------------------------------------- נתונים
 
+def _floor_dict(state) -> dict | None:
+    if state is None:
+        return None
+    return {
+        "floor": state.floor,
+        "base": state.base,
+        "cushion": state.cushion,
+        "open_risk": state.open_risk,
+        "available": state.available,
+        "worst_case": state.worst_case_equity,
+    }
+
+
 @st.cache_data(ttl=8, show_spinner=False)
 def load_snapshot(client_id: str, bust: int) -> dict:
     """תצוגת קריאה בלבד של לקוח יחיד. אינה כותבת דבר."""
@@ -573,6 +586,7 @@ def load_snapshot(client_id: str, bust: int) -> dict:
         "trades_today": stats.trades_opened,
         "drawdown_pct": drawdown_pct,
         "cumulative_realized": sum(t.realized_pnl or 0.0 for t in closed),
+        "floor": _floor_dict(session.risk.floor_state(account, stats)),
         "halted": halted,
         "halt_reason": halt_reason,
         "position_count": len(positions),
@@ -1226,6 +1240,84 @@ def tab_billing(client_id: str, snapshot: dict, demo: bool = False) -> None:
         )
 
 
+TRACK_COPY = {
+    "capital_preservation": (
+        "שמירת קרן",
+        "רצפה ב-95% מהקרן. העסקאות קטנות מאוד, והמטרה העיקרית היא לא להפסיד.",
+    ),
+    "balanced": (
+        "מאוזן",
+        "רצפה ב-90% מהקרן. איזון בין צמיחה להגנה.",
+    ),
+    "growth": (
+        "צמיחה",
+        "רצפה ב-80% מהקרן. עסקאות גדולות יותר ותנודתיות גבוהה יותר.",
+    ),
+}
+
+
+def tab_protection(client_id: str, snapshot: dict, session, armed: bool) -> None:
+    """בחירת מסלול הגנת קרן, ומצב התיק מול הרצפה."""
+    from tradesys.clients.tracks import track_of, write_track
+
+    st.markdown("##### מסלול הגנת קרן")
+    st.caption(
+        "המערכת קובעת את גודל כל עסקה כך שגם אם כל הסטופים הפתוחים יופעלו בבת אחת, "
+        "התיק יישאר מעל הרצפה שבחרת. ככל שמתקרבים לרצפה העסקאות קטנות, "
+        "וברצפה עצמה לא נפתחות עסקאות חדשות."
+    )
+
+    current = track_of(session.profile)
+    columns = st.columns(3)
+    for column, (track, (title, body)) in zip(columns, TRACK_COPY.items()):
+        with column:
+            selected = track == current
+            border = PALETTE["gold"] if selected else PALETTE["border"]
+            badge = " · נבחר" if selected else ""
+            st.markdown(
+                f'<div class="ts-card" style="border-color:{border}">'
+                f'<div class="ts-card-label">{esc(title)}{esc(badge)}</div>'
+                f'<div class="ts-card-sub" style="font-size:13px">{esc(body)}</div>'
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            if st.button(
+                "בחר מסלול" if not selected else "המסלול הנוכחי",
+                key=f"track_{track}",
+                disabled=not armed or selected,
+                use_container_width=True,
+            ):
+                write_track(session.tenant.data_dir, track, snapshot["equity"])
+                invalidate()
+                st.rerun()
+
+    if current is not None and st.button("בטל רצפה", disabled=not armed):
+        write_track(session.tenant.data_dir, None)
+        invalidate()
+        st.rerun()
+
+    floor = snapshot["floor"]
+    st.markdown("")
+    if floor is None:
+        st.info("לא נבחר מסלול. המערכת פועלת לפי מגבלות הסיכון הרגילות בלבד.")
+    else:
+        metrics = st.columns(4)
+        metrics[0].metric("רצפה", money(floor["floor"]))
+        metrics[1].metric("כרית מעל הרצפה", money(floor["cushion"]))
+        metrics[2].metric("בסיכון בפוזיציות פתוחות", money(floor["open_risk"]))
+        metrics[3].metric("אם כל הסטופים יופעלו עכשיו", money(floor["worst_case"]))
+        st.caption(
+            f"הרצפה מחושבת משווי התיק ביום בחירת המסלול: {money(floor['base'])}."
+        )
+        if floor["available"] <= 0:
+            st.warning("התיק ברצפה. עסקאות חדשות לא ייפתחו עד שהכרית תתאושש.", icon="🛡")
+
+    st.caption(
+        "חשוב: זו רצפת יעד ולא הבטחה. אם מחיר נפתח בפער (גאפ) מעבר לסטופ, "
+        "למשל אחרי דוח או חדשות, ההפסד בפועל יכול לעבור את הרצפה."
+    )
+
+
 def tab_controls(
     client_id: str, snapshot: dict, session, armed: bool, demo: bool = False
 ) -> None:
@@ -1465,19 +1557,29 @@ def client_portal(client_id: str, demo: bool = False) -> None:
         )
 
     tabs = st.tabs(
-        ["סקירה כללית", "גרפים", "פעילות הסוכנים", "חיבור ברוקר", "חיוב ותשלומים", "בקרה"]
+        [
+            "סקירה כללית",
+            "הגנת קרן",
+            "גרפים",
+            "פעילות הסוכנים",
+            "חיבור ברוקר",
+            "חיוב ותשלומים",
+            "בקרה",
+        ]
     )
     with tabs[0]:
         tab_overview(snapshot)
     with tabs[1]:
-        tab_charts(client_id, snapshot)
+        tab_protection(client_id, snapshot, session, armed)
     with tabs[2]:
-        tab_agents(snapshot, session, armed)
+        tab_charts(client_id, snapshot)
     with tabs[3]:
-        tab_broker(client_id, demo)
+        tab_agents(snapshot, session, armed)
     with tabs[4]:
-        tab_billing(client_id, snapshot, demo)
+        tab_broker(client_id, demo)
     with tabs[5]:
+        tab_billing(client_id, snapshot, demo)
+    with tabs[6]:
         tab_controls(client_id, snapshot, session, armed, demo)
 
     if not demo and automation_enabled(session) and snapshot["paper"] and not suspended:

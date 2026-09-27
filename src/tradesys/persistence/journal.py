@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS risk_state (
     day            TEXT NOT NULL,
     peak_equity    REAL NOT NULL DEFAULT 0,
     day_start_equity REAL NOT NULL DEFAULT 0,
+    capital_base   REAL NOT NULL DEFAULT 0,
     realized_pnl   REAL NOT NULL DEFAULT 0,
     trades_opened  INTEGER NOT NULL DEFAULT 0,
     halted         INTEGER NOT NULL DEFAULT 0,
@@ -109,6 +110,14 @@ class Journal:
         }
         if "target_price" not in columns:
             self._execute("ALTER TABLE trades ADD COLUMN target_price REAL")
+
+        risk_columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(risk_state)")
+        }
+        if "capital_base" not in risk_columns:
+            self._execute(
+                "ALTER TABLE risk_state ADD COLUMN capital_base REAL NOT NULL DEFAULT 0"
+            )
 
     def _execute(self, sql: str, params: Sequence[Any] = ()) -> sqlite3.Cursor:
         with self._lock:
@@ -354,6 +363,12 @@ class Journal:
                     self.client_id,
                 ),
             )
+        # The first equity ever seen becomes the capital base the floor is
+        # measured against. Set once, never moved by later gains or losses.
+        self._execute(
+            "UPDATE risk_state SET capital_base=? WHERE client_id=? AND capital_base=0",
+            (equity, self.client_id),
+        )
         return self.day_stats(today)
 
     def day_stats(self, today: date) -> DayStats:
@@ -364,6 +379,19 @@ class Journal:
             realized_pnl=float(row["realized_pnl"]),
             trades_opened=int(row["trades_opened"]),
             peak_equity=float(row["peak_equity"]),
+        )
+
+    def capital_base(self) -> float:
+        """Equity when the tenant first traded; 0 until the first session."""
+        row = self._execute(
+            "SELECT capital_base FROM risk_state WHERE client_id=?", (self.client_id,)
+        ).fetchone()
+        return float(row["capital_base"]) if row else 0.0
+
+    def open_risk(self) -> float:
+        """What the book loses if every open position hits its stop at once."""
+        return sum(
+            abs(t.entry_price - t.stop_price) * t.qty for t in self.open_trades()
         )
 
     def day_start_equity(self) -> float:

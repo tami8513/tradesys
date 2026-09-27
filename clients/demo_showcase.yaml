@@ -27,6 +27,8 @@ risk:
   min_price: 1.0
   max_position_pct_of_adv: 0.02
   forbidden_setups: []
+  # מסלול הגנת קרן כברירת מחדל בדמו; הלקוח יכול להחליף בלשונית "הגנת קרן".
+  capital_track: balanced
 
 watchlist:
   - symbol: KULR
