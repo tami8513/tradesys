@@ -20,6 +20,8 @@ from tradesys.core.enums import Side
 from tradesys.core.models import TradeRecord
 
 MIN_TRADES = 5
+# Joins a rejection's reasons in the event log. Not "; ": reasons contain it.
+REASON_SEP = " || "
 GAP_THROUGH_STOP = 0.10
 CRASH = 0.30
 SIM_PATHS = 1000
@@ -160,7 +162,7 @@ def _risk(data: ReportInput) -> AgentCard:
     reasons = Counter(
         _reason_key(part)
         for e in rejected
-        for part in e["detail"].split("; ")
+        for part in e["detail"].split(REASON_SEP)
         if part
     )
     for reason, count in reasons.most_common(3):

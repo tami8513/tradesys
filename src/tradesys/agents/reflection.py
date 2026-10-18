@@ -69,8 +69,13 @@ class ReflectionAgent(Agent):
 
     # ------------------------------------------------------- human in the loop
 
-    def ingest_feedback(self, text: str, trade_id: int | None = None) -> FeedbackReceipt:
+    def ingest_feedback(
+        self, text: str, trade_id: int | None = None, *, source: str = "human"
+    ) -> FeedbackReceipt:
         """Accept one operator instruction and make it binding from the next cycle on.
+
+        `source` tells the client's own notes ("human") from the platform
+        operator's ("operator"), so the client's journal can show who wrote what.
 
         Example inputs:
             "Trade #45 on RIVN was great, prioritize this setup"
@@ -108,7 +113,7 @@ class ReflectionAgent(Agent):
             kind=MemoryKind.HUMAN_FEEDBACK,
             text=self._render_feedback(text, trade),
             metadata={
-                "source": "human",
+                "source": source,
                 "trade_id": trade_id,
                 "symbol": trade.symbol if trade else "",
                 "setup": trade.setup.value if trade else "",

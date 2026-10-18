@@ -375,6 +375,57 @@ def render_agents(client_ids: tuple[str, ...], bust: int) -> None:
         )
 
 
+def render_why_journal(client_ids: tuple[str, ...], armed: bool) -> None:
+    from datetime import timedelta
+
+    from app import get_session, invalidate, render_why
+    from tradesys.orchestration.why import timeline
+
+    st.markdown("##### יומן למה")
+    st.caption("כל החלטה של הרובוט אצל לקוח, בשפה פשוטה: מה זוהה, מה אושר, מה נחסם ולמה.")
+    client_col, days_col, symbol_col = st.columns([2, 1, 1])
+    client_id = client_col.selectbox("לקוח", client_ids, key="why_client")
+    days = days_col.selectbox(
+        "תקופה", [1, 7, 30, 90], index=1, format_func=lambda d: f"{d} ימים", key="why_days"
+    )
+    try:
+        session = get_session(client_id)
+    except (TradesysError, OSError) as exc:
+        st.error(f"לא ניתן לטעון את הלקוח: {exc}")
+        return
+    symbol = symbol_col.selectbox(
+        "נייר", ["הכול", *session.profile.symbols], key="why_symbol"
+    )
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    render_why(
+        timeline(session.journal.agent_events(since), None if symbol == "הכול" else symbol),
+        limit=150,
+    )
+
+    st.divider()
+    st.markdown("##### הוראה לרובוט של הלקוח")
+    st.caption(
+        "כתוב בעברית חופשית. הוראת הימנעות, כמו 'הימנע מפריצות ב-KULR', הופכת לכלל "
+        "מחייב כבר מהסבב הבא. הלקוח רואה את ההוראה ביומן שלו, מסומנת כהערת מנהל."
+    )
+    note = st.text_area(
+        "הוראה",
+        placeholder="הימנע מ-SPCE עד אחרי הדוח",
+        label_visibility="collapsed",
+        key=f"operator_note_{client_id}",
+    )
+    if st.button("שמור הוראה", disabled=not armed, use_container_width=True):
+        if not note.strip():
+            st.warning("לא הוזן טקסט.")
+        else:
+            try:
+                receipt = session.reflection.ingest_feedback(note, source="operator")
+                st.success(f"נשמר. תורגם להנחיה: {receipt.describe()}")
+                invalidate()
+            except (TradesysError, ValueError) as exc:
+                st.error(str(exc))
+
+
 # ------------------------------------------------------------- ייצוא שיווקי
 
 def build_share_card(session, top_n: int = 3) -> tuple[str, dict]:
@@ -1008,27 +1059,32 @@ def render_admin() -> None:
         [
             "סקירת צי",
             "דוח סוכנים",
+            "יומן למה והוראות",
             "פניות הרשמה",
             "ניהול גישה",
             "חיוב ומחזור חיים",
             "מצב צל",
             "ייצוא שיווקי",
             "תודעה משותפת",
-        ]
+        ],
+        key="admin_tabs",
+        on_change="rerun",
     )
     with tabs[0]:
         render_fleet(fleet)
     with tabs[1]:
         render_agents(client_ids, bust)
     with tabs[2]:
-        render_registrations(armed)
+        render_why_journal(client_ids, armed)
     with tabs[3]:
-        render_accounts(fleet, armed)
+        render_registrations(armed)
     with tabs[4]:
-        render_lifecycle(fleet, armed)
+        render_accounts(fleet, armed)
     with tabs[5]:
-        render_shadow(fleet)
+        render_lifecycle(fleet, armed)
     with tabs[6]:
-        render_marketing(fleet, armed)
+        render_shadow(fleet)
     with tabs[7]:
+        render_marketing(fleet, armed)
+    with tabs[8]:
         render_hive(hive)

@@ -30,6 +30,7 @@ from tradesys.data.market_data import MarketDataProvider, SyntheticMarketData
 from tradesys.data.regime import MarketRegime, assess_regime
 from tradesys.memory.directives import DirectiveExtractor
 from tradesys.memory.store import LocalVectorMemory, VectorMemory
+from tradesys.orchestration.agent_report import REASON_SEP
 from tradesys.persistence.journal import Journal
 
 AgentEvent = tuple[str, str, str, str]
@@ -311,7 +312,14 @@ class ClientSession:
         plan = self.offense.plan(candidates) if offense_on else [(c, 1.0) for c in candidates]
 
         for candidate, conviction in plan:
-            events.append(("scout", "candidate", candidate.symbol, candidate.setup.value))
+            events.append(
+                (
+                    "scout",
+                    "candidate",
+                    candidate.symbol,
+                    f"{candidate.setup.value}|{candidate.rationale}",
+                )
+            )
             if offense_on:
                 events.append(
                     ("offense", "sized", candidate.symbol, f"{conviction:.2f}|{candidate.setup.value}")
@@ -322,7 +330,7 @@ class ClientSession:
             if not decision.approved:
                 report.rejections.append((candidate.symbol, decision.reasons))
                 events.append(
-                    ("risk", "rejected", candidate.symbol, "; ".join(decision.reasons))
+                    ("risk", "rejected", candidate.symbol, REASON_SEP.join(decision.reasons))
                 )
                 continue
 

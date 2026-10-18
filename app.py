@@ -887,7 +887,39 @@ def tab_charts(client_id: str, snapshot: dict) -> None:
         st.caption("הקווים המקווקווים הם רמות הכניסה, הסטופ והיעד של הפוזיציה שלך.")
 
 
+def render_why(entries, limit: int = 40) -> None:
+    """The "why" journal: one line per agent decision, newest first."""
+    tones = {
+        "positive": PALETTE["positive"],
+        "negative": PALETTE["negative"],
+        "neutral": PALETTE["border"],
+    }
+    if not entries:
+        st.info("עוד אין החלטות ביומן. הוא מתמלא בכל סבב מסחר, כשהבורסה פתוחה.")
+    for entry in entries[:limit]:
+        symbol = f"{esc(entry.symbol)} · " if entry.symbol else ""
+        st.markdown(
+            f'<div class="ts-entry" style="border-right-color:{tones[entry.tone]}">'
+            f'<div class="ts-entry-meta">{symbol}{ltr(entry.when)}</div>'
+            f"{esc(entry.text)}</div>",
+            unsafe_allow_html=True,
+        )
+
+
 def tab_agents(snapshot: dict, session, armed: bool) -> None:
+    from datetime import timedelta
+
+    from tradesys.orchestration.why import timeline
+
+    st.markdown("##### למה הרובוט עשה את מה שעשה")
+    st.caption(
+        "כל החלטה של הסוכנים בשבועיים האחרונים, בשפה פשוטה: מה זוהה, מה אושר, "
+        "מה נחסם ולמה, ואיך כל עסקה נסגרה."
+    )
+    since = datetime.now(timezone.utc) - timedelta(days=14)
+    render_why(timeline(session.journal.agent_events(since)), limit=30)
+    st.divider()
+
     st.markdown("##### מה הסוכנים רואים עכשיו")
     st.caption(
         "הרצה יבשה של הסקאוט ומנהל הסיכונים. שום פקודה אינה נשלחת לברוקר — "
@@ -966,8 +998,11 @@ def tab_agents(snapshot: dict, session, armed: bool) -> None:
             st.info("אין עדיין רשומות ביומן.")
         for entry in entries[:20]:
             css = "ts-entry"
+            author = ""
             if entry["kind"] == MemoryKind.HUMAN_FEEDBACK.value:
                 css += " ts-entry-human"
+                if entry["metadata"].get("source") == "operator":
+                    author = "הערת מנהל · "
             elif entry["metadata"].get("outcome") == "win":
                 css += " ts-entry-win"
             elif entry["metadata"].get("outcome") == "loss":
@@ -978,7 +1013,7 @@ def tab_agents(snapshot: dict, session, armed: bool) -> None:
                 else ""
             )
             st.markdown(
-                f'<div class="{css}"><div class="ts-entry-meta">{ltr(when)}</div>'
+                f'<div class="{css}"><div class="ts-entry-meta">{esc(author)}{ltr(when)}</div>'
                 f'{esc(entry["text"])}</div>',
                 unsafe_allow_html=True,
             )
@@ -1699,7 +1734,11 @@ def client_portal(client_id: str, demo: bool = False) -> None:
             "חיבור ברוקר",
             "חיוב ותשלומים",
             "בקרה",
-        ]
+        ],
+        # Keyed so a rerun (any slider or dropdown) keeps the open tab instead
+        # of throwing the user back to the first one.
+        key=f"client_tabs_{client_id}",
+        on_change="rerun",
     )
     with tabs[0]:
         tab_overview(snapshot)
