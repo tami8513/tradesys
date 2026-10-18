@@ -88,6 +88,7 @@ class AlpacaMarketData:
         *,
         base_url: str = "https://data.alpaca.markets",
         feed: str = "iex",
+        history_feed: str = "sip",
         timeout: float = 10.0,
         now: Callable[[], datetime] | None = None,
     ) -> None:
@@ -97,6 +98,11 @@ class AlpacaMarketData:
         }
         self._base_url = base_url.rstrip("/")
         self._feed = feed
+        # Bars come from the full consolidated tape (SIP). The free plan serves
+        # it with a 15-minute delay, which is irrelevant for daily bars, while
+        # IEX alone carries only ~4-5% of real volume: volume ratios and
+        # liquidity caps computed on IEX are off by a factor of 20 or more.
+        self._history_feed = history_feed
         self._timeout = timeout
         self._now = now or (lambda: datetime.now(timezone.utc))
 
@@ -123,14 +129,18 @@ class AlpacaMarketData:
         not be sent to the API — it would return the oldest bars, not the latest.
         The window is fetched in full and trimmed here instead.
         """
-        start = self._now() - timedelta(days=_lookback_days(timeframe, limit))
+        now = self._now()
+        start = now - timedelta(days=_lookback_days(timeframe, limit))
         params: dict[str, object] = {
             "timeframe": timeframe,
             "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "feed": self._feed,
+            "feed": self._history_feed,
             "adjustment": "split",
             "limit": 10000,
         }
+        if self._history_feed == "sip" and self._feed != "sip":
+            # Free plan: the most recent 15 minutes of SIP data are withheld.
+            params["end"] = (now - timedelta(minutes=16)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         bars: list[Bar] = []
         while True:

@@ -86,11 +86,32 @@ def test_history_follows_pagination(monkeypatch):
     assert len(bars) == 150
 
 
-def test_history_uses_split_adjusted_iex_bars(monkeypatch):
+def test_history_uses_full_tape_volume_with_the_free_plan_delay(monkeypatch):
+    """Bars come from SIP, ending 15+ minutes ago, which the free plan allows.
+
+    Measured on a real account: IEX alone carried 4-5% of RIVN's daily volume.
+    """
     calls = install(monkeypatch, [{"bars": []}])
     client().history("RIVN", timeframe="1Day", limit=10)
+    params = calls[0]["params"]
+    assert params["feed"] == "sip"
+    assert params["adjustment"] == "split"
+    end = datetime.strptime(params["end"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    assert NOW - end >= timedelta(minutes=15)
+
+
+def test_last_price_stays_real_time_on_iex(monkeypatch):
+    calls = install(monkeypatch, [{"trade": {"p": 1.0}}])
+    client().last_price("RIVN")
     assert calls[0]["params"]["feed"] == "iex"
-    assert calls[0]["params"]["adjustment"] == "split"
+
+
+def test_paid_sip_plan_needs_no_delay(monkeypatch):
+    calls = install(monkeypatch, [{"bars": []}])
+    AlpacaMarketData("k", "s", feed="sip", now=lambda: NOW).history(
+        "RIVN", timeframe="1Day", limit=10
+    )
+    assert "end" not in calls[0]["params"]
 
 
 def test_last_price_reads_the_latest_trade(monkeypatch):
