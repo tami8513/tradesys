@@ -23,7 +23,9 @@ export PYTHONPATH="$PWD/src:$PWD"
   done
 ) &
 
+# Visitors get a generic error message; the traceback goes only to the server log.
 exec streamlit run app.py \
   --server.address 0.0.0.0 \
   --server.port "${PORT:-8501}" \
-  --server.headless true
+  --server.headless true \
+  --client.showErrorDetails none

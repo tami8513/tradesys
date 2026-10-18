@@ -49,6 +49,7 @@ from tradesys.core.clock import trading_day  # noqa: E402
 from tradesys.core.config import Settings  # noqa: E402
 from tradesys.core.enums import MemoryKind  # noqa: E402
 from tradesys.core.errors import TradesysError  # noqa: E402
+from tradesys.core.identity import is_valid_client_id  # noqa: E402
 from tradesys.orchestration.engine import TradingSystem  # noqa: E402
 
 import accounts as acct  # noqa: E402
@@ -348,6 +349,12 @@ def registration_form() -> None:
         if not agreed:
             st.warning("יש לאשר את הצהרת הסיכון.")
             return
+        if not is_valid_client_id(client_id.strip()):
+            st.warning(
+                "מזהה הלקוח יכול להכיל רק אותיות קטנות באנגלית, ספרות וקו תחתון, "
+                "להתחיל באות ולהיות באורך 3 עד 40 תווים. לדוגמה: tal_dahan"
+            )
+            return
         if store.get(client_id.strip()) is not None:
             st.error("מזהה הלקוח הזה כבר תפוס.")
             return
@@ -421,7 +428,10 @@ def login_screen() -> None:
                 if not client_id or not password:
                     st.warning("יש למלא מזהה לקוח וסיסמה.")
                 else:
-                    account = get_account_store().authenticate(client_id.strip(), password)
+                    # Ids are stored lowercase; "Tal_dahan" typed on a phone is the same client.
+                    account = get_account_store().authenticate(
+                        client_id.strip().lower(), password
+                    )
                     if account is None:
                         # הודעה זהה לכל סוגי הכשל — לא חושפים אילו מזהים קיימים
                         st.error("פרטי התחברות שגויים או שהחשבון אינו פעיל.")

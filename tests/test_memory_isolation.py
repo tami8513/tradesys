@@ -4,7 +4,7 @@ import pytest
 
 from tradesys.core.enums import MemoryKind
 from tradesys.core.errors import ConfigError, TenantIsolationError
-from tradesys.core.identity import validate_client_id
+from tradesys.core.identity import is_valid_client_id, validate_client_id
 from tradesys.core.models import MemoryRecord
 from tradesys.core.tenancy import TenantContext
 from tradesys.memory.store import LocalVectorMemory
@@ -49,6 +49,15 @@ def test_tenants_get_distinct_paths_and_collections(tmp_path):
 def test_client_id_is_validated_before_touching_the_filesystem(bad_id):
     with pytest.raises(ConfigError):
         validate_client_id(bad_id)
+
+
+@pytest.mark.parametrize("bad_id", ["Tal Dehan", "Tal_dahan", "tal-dahan", "ta", ""])
+def test_form_input_can_be_checked_without_raising(bad_id):
+    assert not is_valid_client_id(bad_id)
+
+
+def test_well_formed_client_id_passes_the_check():
+    assert is_valid_client_id("tal_dahan")
 
 
 def test_context_rejects_objects_from_another_tenant(tmp_path):
