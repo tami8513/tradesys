@@ -95,6 +95,10 @@ def parse_profile(doc: Mapping[str, Any], path: Path) -> ClientProfile:
                 raw_risk.get("floor_cushion_per_trade_pct", 20.0)
             ),
             floor_ratchet=bool(raw_risk.get("floor_ratchet", False)),
+            trailing_stop=bool(raw_risk.get("trailing_stop", False)),
+            trail_activation_r=float(raw_risk.get("trail_activation_r", 1.0)),
+            trail_distance_r=float(raw_risk.get("trail_distance_r", 1.0)),
+            let_winners_run=bool(raw_risk.get("let_winners_run", False)),
         )
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"{path.name}: invalid risk block ({exc})") from exc

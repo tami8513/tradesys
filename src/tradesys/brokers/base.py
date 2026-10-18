@@ -22,3 +22,6 @@ class Broker(Protocol):
     def submit(self, order: OrderRequest) -> OrderResult: ...
 
     def close_position(self, symbol: str) -> OrderResult | None: ...
+
+    def update_stop(self, symbol: str, stop_price: float) -> None:
+        """Move a resting server-side stop. A broker without one has nothing to move."""

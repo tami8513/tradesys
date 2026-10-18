@@ -14,6 +14,7 @@ import pytest
 from tradesys.brokers.alpaca import AlpacaBroker
 from tradesys.clients.secrets import BrokerCredentials
 from tradesys.core.enums import OrderStatus, OrderType, Side, TimeInForce
+from tradesys.core.errors import BrokerError
 from tradesys.core.models import OrderRequest
 from tradesys.core.tenancy import TenantContext
 
@@ -122,6 +123,23 @@ def test_close_cancels_bracket_legs_before_selling(tmp_path):
         ("DELETE", "/v2/positions/SPY"),
     ]
     assert result is not None and result.filled_avg_price == pytest.approx(590.10)
+
+
+def test_update_stop_moves_only_the_resting_sell_stop(tmp_path):
+    fake = FakeAlpaca({
+        ("GET", "/v2/orders"): [[
+            {"id": "leg-stop", "type": "stop", "side": "sell"},
+            {"id": "leg-target", "type": "limit", "side": "sell"},
+        ]],
+    })
+    broker(tmp_path, fake).update_stop("SPY", 23.456)
+    assert [c for c in fake.calls if c[0] == "PATCH"] == [("PATCH", "/v2/orders/leg-stop")]
+
+
+def test_update_stop_without_a_resting_stop_is_an_error(tmp_path):
+    fake = FakeAlpaca({("GET", "/v2/orders"): [[]]})
+    with pytest.raises(BrokerError):
+        broker(tmp_path, fake).update_stop("SPY", 23.0)
 
 
 def test_close_with_no_position_reports_none(tmp_path):

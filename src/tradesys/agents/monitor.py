@@ -14,8 +14,12 @@ from tradesys.core.enums import ExitReason, Side
 from tradesys.core.errors import TradesysError
 from tradesys.core.models import MemoryRecord, TradeRecord
 from tradesys.core.tenancy import TenantContext
+from tradesys.data.indicators import closes, sma
 from tradesys.data.market_data import MarketDataProvider
 from tradesys.persistence.journal import Journal
+
+TREND_SMA_PERIOD = 10
+TREND_SLOPE_BARS = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +45,7 @@ class MonitorReport:
     checked_at: datetime
     open_trades: int = 0
     closed: list[ClosedTrade] = field(default_factory=list)
+    adjusted: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -48,9 +53,10 @@ class MonitorReport:
         return sum(c.trade.realized_pnl or 0.0 for c in self.closed)
 
     def summary(self) -> str:
-        if not self.closed and not self.errors:
+        if not self.closed and not self.errors and not self.adjusted:
             return f"[{self.client_id}] {self.open_trades} position(s) held, no exits"
         parts = [f"[{self.client_id}] {self.open_trades} checked"]
+        parts.extend(self.adjusted)
         for closed in self.closed:
             parts.append(
                 f"{closed.trade.symbol} closed on {closed.reason.value} "
@@ -145,7 +151,15 @@ class PositionMonitor(Agent):
                 report.errors.append(f"{symbol}: price unavailable ({exc})")
                 continue
 
-            signal = self._evaluate(trades[0], price, symbol in held, now)
+            trade = trades[0]
+            if (
+                self.profile.risk.trailing_stop
+                and trade.side is Side.BUY
+                and symbol in held
+            ):
+                trade = self._trail(symbol, trade, price, report)
+
+            signal = self._evaluate(trade, price, symbol in held, now)
             if signal is None:
                 continue
             try:
@@ -198,7 +212,10 @@ class PositionMonitor(Agent):
                     f"{price:.2f} reached target {trade.target_price:.2f}",
                 )
 
-        if self._max_holding_days is not None:
+        # The time stop closes theses that never resolved. A long whose stop has
+        # been trailed to breakeven or better has resolved, and is left to run.
+        profit_locked = long and trade.stop_price >= trade.entry_price
+        if self._max_holding_days is not None and not profit_locked:
             held_days = (now - trade.opened_at).total_seconds() / 86400
             if held_days >= self._max_holding_days:
                 return ExitSignal(
@@ -210,6 +227,76 @@ class PositionMonitor(Agent):
                 )
 
         return None
+
+    # ------------------------------------------------------------ trailing
+
+    def _trail(
+        self, symbol: str, trade: TradeRecord, price: float, report: MonitorReport
+    ) -> TradeRecord:
+        """Raise the stop behind a winning long; at the target, hold if the trend holds.
+
+        Runs before the exit checks, so a price that already fell back through the
+        trailed level is caught by the stop check in the same sweep.
+        """
+        limits = self.profile.risk
+        risk = trade.risk_per_share
+        if risk <= 0:
+            return trade
+
+        peak = max(trade.peak_price or trade.entry_price, price)
+        stop = trade.stop_price
+        if peak >= trade.entry_price + limits.trail_activation_r * risk:
+            stop = max(stop, trade.entry_price, peak - limits.trail_distance_r * risk)
+
+        release_target = False
+        if (
+            limits.let_winners_run
+            and trade.target_price is not None
+            and price >= trade.target_price
+            and self._trend_confirms(symbol, price)
+        ):
+            release_target = True
+            half_target_gain = trade.entry_price + 0.5 * (trade.target_price - trade.entry_price)
+            stop = max(stop, half_target_gain)
+
+        if stop <= trade.stop_price and peak <= (trade.peak_price or 0) and not release_target:
+            return trade
+
+        updated = self._journal.trail_stop(
+            trade.trade_id, stop, peak, release_target=release_target
+        ) or trade
+        if release_target:
+            report.adjusted.append(
+                f"{symbol} reached target {trade.target_price:.2f}, trend intact: holding"
+            )
+        if updated.stop_price > trade.stop_price:
+            report.adjusted.append(
+                f"{symbol} stop {trade.stop_price:.2f} -> {updated.stop_price:.2f}"
+            )
+            try:
+                self._broker.update_stop(symbol, updated.stop_price)
+            except Exception as exc:
+                # Deliberately broad, as in the sweep: the journal stop is already
+                # raised and this monitor enforces it every pass either way.
+                report.errors.append(f"{symbol}: broker stop not moved ({exc})")
+        return updated
+
+    def _trend_confirms(self, symbol: str, price: float) -> bool:
+        """Price above a rising short average. Missing data means take the profit."""
+        try:
+            bars = self._market_data.history(
+                symbol,
+                timeframe=self.profile.timeframe,
+                limit=TREND_SMA_PERIOD + TREND_SLOPE_BARS,
+            )
+        except Exception:  # an outage here must fall back to the planned exit
+            return False
+        values = closes(bars)
+        current = sma(values, TREND_SMA_PERIOD)
+        earlier = sma(values[:-TREND_SLOPE_BARS], TREND_SMA_PERIOD)
+        if current is None or earlier is None:
+            return False
+        return price > current and current > earlier
 
     # ------------------------------------------------------- close + reflect
 

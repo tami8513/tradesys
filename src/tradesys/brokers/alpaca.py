@@ -152,6 +152,22 @@ class AlpacaBroker:
             return None
         return _parse_order(self.client_id, self._await_final(payload))
 
+    def update_stop(self, symbol: str, stop_price: float) -> None:
+        """Move the resting stop leg, so a raised stop also holds between sweeps."""
+        open_orders = self._request(
+            "GET", "/v2/orders", params={"status": "open", "symbols": symbol.upper()}
+        ) or []
+        stops = [
+            o for o in open_orders
+            if o.get("type") in ("stop", "stop_limit") and o.get("side") == "sell"
+        ]
+        if not stops:
+            raise BrokerError(f"no resting stop order for {symbol.upper()} to move")
+        for order in stops:
+            self._request(
+                "PATCH", f"/v2/orders/{order['id']}", {"stop_price": f"{stop_price:.2f}"}
+            )
+
     def _await_final(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         """Re-read a just-submitted order until it fills or the wait runs out.
 

@@ -144,6 +144,8 @@ class TradeRecord:
     closed_at: datetime | None = None
     realized_pnl: float | None = None
     rationale: str = ""
+    initial_stop: float | None = None   # stop at entry; stop_price moves when trailing
+    peak_price: float | None = None     # best price seen while open, for the trail
 
     @property
     def is_closed(self) -> bool:
@@ -151,7 +153,10 @@ class TradeRecord:
 
     @property
     def risk_per_share(self) -> float:
-        return abs(self.entry_price - self.stop_price)
+        # Measured from the entry stop: a trailed stop at breakeven would otherwise
+        # make every winner's R-multiple zero and corrupt what the system learns.
+        stop = self.initial_stop if self.initial_stop is not None else self.stop_price
+        return abs(self.entry_price - stop)
 
     def r_multiple(self) -> float:
         """Realized P&L expressed in units of the risk originally taken."""

@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS trades (
     closed_at     TEXT,
     realized_pnl  REAL,
     rationale     TEXT NOT NULL DEFAULT '',
-    reflected     INTEGER NOT NULL DEFAULT 0
+    reflected     INTEGER NOT NULL DEFAULT 0,
+    initial_stop  REAL,
+    peak_price    REAL
 );
 CREATE INDEX IF NOT EXISTS idx_trades_client_open ON trades (client_id, closed_at);
 
@@ -110,6 +112,9 @@ class Journal:
         }
         if "target_price" not in columns:
             self._execute("ALTER TABLE trades ADD COLUMN target_price REAL")
+        for column in ("initial_stop", "peak_price"):
+            if column not in columns:
+                self._execute(f"ALTER TABLE trades ADD COLUMN {column} REAL")
 
         risk_columns = {
             row["name"] for row in self._conn.execute("PRAGMA table_info(risk_state)")
@@ -143,7 +148,8 @@ class Journal:
         self._tenant.assert_owns(order)
         cursor = self._execute(
             "INSERT INTO trades (client_id, symbol, setup, side, qty, entry_price, "
-            "stop_price, target_price, opened_at, rationale) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "stop_price, target_price, opened_at, rationale, initial_stop, peak_price) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 self.client_id,
                 order.symbol,
@@ -155,9 +161,34 @@ class Journal:
                 candidate.target,
                 opened_at.isoformat(),
                 candidate.rationale,
+                candidate.stop,
+                fill_price,
             ),
         )
         return int(cursor.lastrowid)
+
+    def trail_stop(
+        self,
+        trade_id: int,
+        stop: float,
+        peak: float,
+        *,
+        release_target: bool = False,
+    ) -> TradeRecord | None:
+        """Raise a long trade's stop and record its peak. A stop never moves down.
+
+        The MAX() is in the statement itself, so no caller — and no race between
+        the monitor thread and the trading loop — can loosen a stop.
+        """
+        target_sql = ", target_price=NULL" if release_target else ""
+        self._execute(
+            "UPDATE trades SET stop_price=MAX(stop_price, ?), "
+            "peak_price=MAX(COALESCE(peak_price, entry_price), ?)"
+            f"{target_sql} "
+            "WHERE trade_id=? AND client_id=? AND closed_at IS NULL AND side=?",
+            (stop, peak, trade_id, self.client_id, Side.BUY.value),
+        )
+        return self.get_trade(trade_id)
 
     def close_trade(
         self, trade_id: int, exit_price: float, closed_at: datetime
@@ -465,4 +496,6 @@ def _row_to_trade(row: sqlite3.Row) -> TradeRecord:
         closed_at=datetime.fromisoformat(row["closed_at"]) if row["closed_at"] else None,
         realized_pnl=row["realized_pnl"],
         rationale=row["rationale"],
+        initial_stop=row["initial_stop"],
+        peak_price=row["peak_price"],
     )

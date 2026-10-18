@@ -69,6 +69,17 @@ class RiskProfile:
     # are protected as well as the deposit.
     floor_ratchet: bool = False
 
+    # --- trailing stop ------------------------------------------------------
+    # Distances are in R, the per-share risk taken at entry. Once a long is
+    # `trail_activation_r` in profit its stop moves to breakeven, then follows
+    # the peak at `trail_distance_r` below it. The stop never moves down.
+    trailing_stop: bool = False
+    trail_activation_r: float = 1.0
+    trail_distance_r: float = 1.0
+    # At the target, keep holding while the trend still confirms instead of
+    # selling, locking in at least half the target gain. Needs the trail to exit.
+    let_winners_run: bool = False
+
     def __post_init__(self) -> None:
         pcts = {
             "max_drawdown_pct": self.max_drawdown_pct,
@@ -100,6 +111,13 @@ class RiskProfile:
             raise ConfigError("capital_floor_base must be positive when set")
         if not 0 < self.floor_cushion_per_trade_pct <= 100:
             raise ConfigError("floor_cushion_per_trade_pct must be in (0, 100]")
+        if self.trail_activation_r <= 0 or self.trail_distance_r <= 0:
+            raise ConfigError("trail_activation_r and trail_distance_r must be positive")
+        if self.let_winners_run and not self.trailing_stop:
+            raise ConfigError(
+                "let_winners_run needs trailing_stop: without it a position held past "
+                "its target has no exit that protects the gain"
+            )
 
 
 @dataclass(frozen=True, slots=True)

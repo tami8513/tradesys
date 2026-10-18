@@ -265,7 +265,10 @@ class RiskManager(Agent):
             client_order_id=self._client_order_id(candidate),
             limit_price=round(candidate.entry, 2),
             stop_loss=round(candidate.stop, 2),
-            take_profit=round(candidate.target, 2),
+            # A resting take-profit leg would sell at the target no matter what the
+            # monitor decides, so letting winners run means sending the stop alone.
+            # The target still lives in the journal, from the candidate.
+            take_profit=None if limits.let_winners_run else round(candidate.target, 2),
         )
         self.log.info(
             "approved %s %s x%d (risk %.2f, R:R %.2f)",
