@@ -345,7 +345,9 @@ class PositionMonitor(Agent):
             )
 
         for trade in trades:
-            closed = self._journal.close_trade(trade.trade_id, exit_price, self.clock.now())
+            closed = self._journal.close_trade(
+                trade.trade_id, exit_price, self.clock.now(), signal.reason.value
+            )
             if closed is None:
                 report.errors.append(
                     f"{symbol}: trade #{trade.trade_id} was already closed"

@@ -277,6 +277,93 @@ def load_hive(client_ids: tuple[str, ...], bust: int) -> dict:
     return {"frame": frame, "by_setup": by_setup, "tenants": len(client_ids)}
 
 
+# --------------------------------------------------------------- דוח סוכנים
+
+STATUS_STYLE = {
+    "good": ("עובד טוב", PALETTE["positive"]),
+    "watch": ("דורש מעקב", PALETTE["warning"]),
+    "bad": ("דורש טיפול", PALETTE["negative"]),
+    "no_data": ("אין מספיק נתונים", PALETTE["muted"]),
+}
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_agent_report(client_ids: tuple[str, ...], days: int, bust: int) -> list:
+    """Report cards over the chosen tenants. Reads journals only; writes nothing."""
+    del bust
+    from datetime import timedelta
+
+    from app import get_session
+    from tradesys.orchestration.agent_report import ReportInput, build_report
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    trades, events, statuses = [], [], []
+    directives = memory = 0
+    for client_id in client_ids:
+        try:
+            session = get_session(client_id)
+        except (TradesysError, OSError):
+            continue
+        journal = session.journal
+        trades += [
+            t for t in journal.closed_trades(limit=5000)
+            if t.closed_at and t.closed_at >= since
+        ]
+        events += journal.agent_events(since)
+        statuses += journal.order_statuses()
+        directives += len(journal.active_directives())
+        memory += session.memory.count()
+    return build_report(ReportInput(trades, events, statuses, directives, memory))
+
+
+def render_agents(client_ids: tuple[str, ...], bust: int) -> None:
+    st.markdown("##### דוח סוכנים")
+    st.caption(
+        "לשימוש פנימי בלבד, לא מוצג ללקוחות. כל ציון מחושב מהעסקאות ומההחלטות "
+        "שנרשמו בפועל. סוכן בלי מספיק היסטוריה מסומן כך, ולא מקבל ציון מומצא."
+    )
+    scope_col, period_col = st.columns([2, 1])
+    scope = scope_col.selectbox(
+        "לקוח", ["כל הלקוחות", *client_ids], key="agents_scope"
+    )
+    days = period_col.selectbox(
+        "תקופה", [7, 30, 90, 365], index=1, format_func=lambda d: f"{d} ימים",
+        key="agents_days",
+    )
+    chosen = client_ids if scope == "כל הלקוחות" else (scope,)
+    cards = load_agent_report(chosen, days, bust)
+
+    for card in cards:
+        label, color = STATUS_STYLE[card.status]
+        kpis = "".join(
+            f'<div style="display:flex;justify-content:space-between;gap:12px;'
+            f'padding:3px 0;border-bottom:1px solid {PALETTE["border"]}">'
+            f'<span style="color:{PALETTE["muted"]}">{html.escape(k)}</span>'
+            f"<b>{html.escape(v)}</b></div>"
+            for k, v in card.kpis
+        )
+        findings = "".join(
+            f'<li style="margin:4px 0">{html.escape(f)}</li>' for f in card.findings
+        )
+        head = card.key == "head"
+        st.markdown(
+            f'<div class="ts-card" style="border-color:{color if head else PALETTE["border"]};'
+            f'margin-bottom:12px">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center">'
+            f'<div style="font-size:{18 if head else 16}px;font-weight:700">'
+            f"{html.escape(card.name)}</div>"
+            f'<span style="color:{color};border:1px solid {color};border-radius:999px;'
+            f'padding:2px 10px;font-size:12px">{label}</span></div>'
+            f'<div style="color:{PALETTE["muted"]};font-size:13px;margin:6px 0 10px">'
+            f"{html.escape(card.role)}</div>"
+            f"{kpis}"
+            + (f'<ul style="margin:10px 0 0;padding-inline-start:18px">{findings}</ul>'
+               if findings else "")
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+
+
 # ------------------------------------------------------------- ייצוא שיווקי
 
 def build_share_card(session, top_n: int = 3) -> tuple[str, dict]:
@@ -909,6 +996,7 @@ def render_admin() -> None:
     tabs = st.tabs(
         [
             "סקירת צי",
+            "דוח סוכנים",
             "פניות הרשמה",
             "ניהול גישה",
             "חיוב ומחזור חיים",
@@ -920,14 +1008,16 @@ def render_admin() -> None:
     with tabs[0]:
         render_fleet(fleet)
     with tabs[1]:
-        render_registrations(armed)
+        render_agents(client_ids, bust)
     with tabs[2]:
-        render_accounts(fleet, armed)
+        render_registrations(armed)
     with tabs[3]:
-        render_lifecycle(fleet, armed)
+        render_accounts(fleet, armed)
     with tabs[4]:
-        render_shadow(fleet)
+        render_lifecycle(fleet, armed)
     with tabs[5]:
-        render_marketing(fleet, armed)
+        render_shadow(fleet)
     with tabs[6]:
+        render_marketing(fleet, armed)
+    with tabs[7]:
         render_hive(hive)

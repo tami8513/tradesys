@@ -146,6 +146,7 @@ class TradeRecord:
     rationale: str = ""
     initial_stop: float | None = None   # stop at entry; stop_price moves when trailing
     peak_price: float | None = None     # best price seen while open, for the trail
+    exit_reason: str = ""               # ExitReason value; empty for older trades
 
     @property
     def is_closed(self) -> bool:

@@ -78,6 +78,17 @@ CREATE TABLE IF NOT EXISTS risk_state (
     halt_reason    TEXT NOT NULL DEFAULT '',
     updated_at     TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS agent_events (
+    event_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id  TEXT NOT NULL,
+    agent      TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    symbol     TEXT NOT NULL DEFAULT '',
+    detail     TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_events ON agent_events (client_id, agent, created_at);
 """
 
 
@@ -115,6 +126,8 @@ class Journal:
         for column in ("initial_stop", "peak_price"):
             if column not in columns:
                 self._execute(f"ALTER TABLE trades ADD COLUMN {column} REAL")
+        if "exit_reason" not in columns:
+            self._execute("ALTER TABLE trades ADD COLUMN exit_reason TEXT NOT NULL DEFAULT ''")
 
         risk_columns = {
             row["name"] for row in self._conn.execute("PRAGMA table_info(risk_state)")
@@ -191,7 +204,7 @@ class Journal:
         return self.get_trade(trade_id)
 
     def close_trade(
-        self, trade_id: int, exit_price: float, closed_at: datetime
+        self, trade_id: int, exit_price: float, closed_at: datetime, reason: str = ""
     ) -> TradeRecord | None:
         """Close an open trade and book its P&L. Returns None if it is already closed.
 
@@ -209,12 +222,46 @@ class Journal:
             direction = 1 if row["side"] == Side.BUY.value else -1
             pnl = (exit_price - row["entry_price"]) * row["qty"] * direction
             self._execute(
-                "UPDATE trades SET exit_price=?, closed_at=?, realized_pnl=? "
+                "UPDATE trades SET exit_price=?, closed_at=?, realized_pnl=?, exit_reason=? "
                 "WHERE trade_id=? AND client_id=?",
-                (exit_price, closed_at.isoformat(), pnl, trade_id, self.client_id),
+                (exit_price, closed_at.isoformat(), pnl, reason, trade_id, self.client_id),
             )
             self._bump_realized_pnl(pnl, closed_at)
             return self.get_trade(trade_id)
+
+    # ---------------------------------------------------------- agent events
+
+    def log_events(self, events: Sequence[tuple[str, str, str, str]], when: datetime) -> None:
+        """Record what each agent did: (agent, kind, symbol, detail) rows.
+
+        The cycle report lives only in memory and in a log line; without this the
+        operator's agent report could only count trades, never the decisions behind
+        them — how many ideas were found, or why the risk manager said no.
+        """
+        if not events:
+            return
+        self._executemany(
+            "INSERT INTO agent_events (client_id, agent, kind, symbol, detail, created_at)"
+            " VALUES (?,?,?,?,?,?)",
+            [
+                (self.client_id, agent, kind, symbol, detail[:500], when.isoformat())
+                for agent, kind, symbol, detail in events
+            ],
+        )
+
+    def agent_events(self, since: datetime) -> list[dict[str, Any]]:
+        rows = self._execute(
+            "SELECT agent, kind, symbol, detail, created_at FROM agent_events"
+            " WHERE client_id=? AND created_at >= ? ORDER BY event_id",
+            (self.client_id, since.isoformat()),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def order_statuses(self) -> list[str]:
+        rows = self._execute(
+            "SELECT status FROM orders WHERE client_id=?", (self.client_id,)
+        ).fetchall()
+        return [row["status"] for row in rows]
 
     def get_trade(self, trade_id: int) -> TradeRecord | None:
         row = self._execute(
@@ -498,4 +545,5 @@ def _row_to_trade(row: sqlite3.Row) -> TradeRecord:
         rationale=row["rationale"],
         initial_stop=row["initial_stop"],
         peak_price=row["peak_price"],
+        exit_reason=row["exit_reason"],
     )

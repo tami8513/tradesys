@@ -31,6 +31,28 @@ from tradesys.memory.directives import DirectiveExtractor
 from tradesys.memory.store import LocalVectorMemory, VectorMemory
 from tradesys.persistence.journal import Journal
 
+AgentEvent = tuple[str, str, str, str]
+
+
+def _monitor_events(report: MonitorReport) -> list[AgentEvent]:
+    events: list[AgentEvent] = []
+    for closed in report.closed:
+        events.append(
+            (
+                "monitor",
+                "exit",
+                closed.trade.symbol,
+                f"{closed.reason.value}|{closed.trade.r_multiple():.2f}",
+            )
+        )
+        if closed.lessons:
+            events.append(("reflection", "lessons", closed.trade.symbol, str(len(closed.lessons))))
+    for line in report.adjusted:
+        kind = "held_past_target" if "holding" in line else "stop_raised"
+        events.append(("monitor", kind, line.split(" ", 1)[0], line))
+    events.extend(("monitor", "error", "", error) for error in report.errors)
+    return events
+
 
 @dataclass(slots=True)
 class CycleReport:
@@ -259,6 +281,7 @@ class ClientSession:
         # Manage existing risk before taking on any more: an exit here frees a
         # position slot and books P&L that the risk checks below will see.
         report.monitor = self.monitor.check_once()
+        events = _monitor_events(report.monitor)
 
         account = self.broker.account()
         preflight = self.risk.preflight(account)
@@ -266,6 +289,8 @@ class ClientSession:
             report.halted = True
             report.halt_reason = preflight.reason
             log.warning("cycle aborted: %s", preflight.reason)
+            events.append(("risk", "halted", "", preflight.reason))
+            self.journal.log_events(events, report.started_at)
             return report
 
         positions = self.broker.positions()
@@ -280,16 +305,29 @@ class ClientSession:
         report.candidates = len(candidates)
 
         for candidate in candidates:
+            events.append(("scout", "candidate", candidate.symbol, candidate.setup.value))
             decision: RiskDecision = self.risk.evaluate(
                 candidate, account, positions, stats, regime
             )
             if not decision.approved:
                 report.rejections.append((candidate.symbol, decision.reasons))
+                events.append(
+                    ("risk", "rejected", candidate.symbol, "; ".join(decision.reasons))
+                )
                 continue
 
             report.approvals += 1
+            events.append(("risk", "approved", candidate.symbol, candidate.setup.value))
             outcome = self.execution.execute(decision)
             report.outcomes.append(outcome)
+            events.append(
+                (
+                    "execution",
+                    outcome.result.status.value if outcome.result else "not_sent",
+                    candidate.symbol,
+                    outcome.reason,
+                )
+            )
             if outcome.submitted:
                 report.submissions += 1
                 # Re-read state so later candidates in this same cycle are evaluated
@@ -298,7 +336,10 @@ class ClientSession:
                 positions = self.broker.positions()
                 stats = self.journal.day_stats(trading_day(self.clock))
 
-        self.reflection.reflect()
+        lessons = self.reflection.reflect()
+        if lessons:
+            events.append(("reflection", "lessons", "", str(len(lessons))))
+        self.journal.log_events(events, report.started_at)
         log.info(report.summary())
         return report
 
