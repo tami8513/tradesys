@@ -263,6 +263,21 @@ long average removes a large share of losses without predicting anything.
 The regime is read once per cycle and passed into `RiskManager.evaluate()` as a
 fact, keeping that class free of I/O and non-determinism.
 
+## Server (Render)
+
+`render.yaml` is a Render Blueprint: New -> Blueprint -> this repo. It runs one
+web service whose `start.sh` launches both the dashboard and the scheduler,
+sharing a persistent disk at `/var/data`. Render prompts only for the secrets.
+
+The scheduler (`python -m tradesys.scheduler`) asks Alpaca's market clock before
+each loop, so it follows holidays and half days. While open it runs a cycle every
+`TRADESYS_CYCLE_MINUTES` for tenants whose automation switch is on
+(`TRADESYS_AUTORUN` seeds that list on a fresh disk) and that are not suspended.
+
+Because two processes share the disk, JSON state files (paper ledger, vector
+memory) take a file lock for every write and re-read when another process changed
+them — otherwise each process would overwrite the other's fills and lessons.
+
 ## Onboarding a new client
 
 Add `clients/<client_id>.yaml`. That is the whole procedure — no code changes. The

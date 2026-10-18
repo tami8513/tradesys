@@ -52,6 +52,7 @@ from tradesys.core.errors import TradesysError  # noqa: E402
 from tradesys.orchestration.engine import TradingSystem  # noqa: E402
 
 import accounts as acct  # noqa: E402
+from tradesys.clients import automation as shared_automation  # noqa: E402
 
 # --------------------------------------------------------------------- עיצוב
 
@@ -265,27 +266,17 @@ def price_feed_label() -> str:
 
 # --------------------------------------------------------------- מחזור חיים
 
-def automation_path(session) -> Path:
-    return session.tenant.data_dir / "automation.json"
-
-
 def automation_enabled(session) -> bool:
-    path = automation_path(session)
-    if not path.exists():
-        return False
-    try:
-        return bool(json.loads(path.read_text(encoding="utf-8")).get("enabled"))
-    except (ValueError, OSError):
-        return False
+    return shared_automation.automation_enabled(session.tenant.data_dir, session.client_id)
 
 
 def set_automation(session, enabled: bool) -> None:
-    automation_path(session).write_text(
-        json.dumps(
-            {"enabled": bool(enabled), "updated_at": datetime.now(timezone.utc).isoformat()}
-        ),
-        encoding="utf-8",
-    )
+    shared_automation.set_automation(session.tenant.data_dir, enabled)
+
+
+def scheduler_mode() -> bool:
+    """True on the server, where a separate process runs the automated cycles."""
+    return os.getenv("TRADESYS_SCHEDULER") == "1"
 
 
 def tenant_suspended(session) -> tuple[bool, str]:
@@ -1582,7 +1573,13 @@ def client_portal(client_id: str, demo: bool = False) -> None:
     with tabs[6]:
         tab_controls(client_id, snapshot, session, armed, demo)
 
-    if not demo and automation_enabled(session) and snapshot["paper"] and not suspended:
+    if (
+        not scheduler_mode()
+        and not demo
+        and automation_enabled(session)
+        and snapshot["paper"]
+        and not suspended
+    ):
         automation_tick(client_id)
 
 

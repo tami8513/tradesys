@@ -9,6 +9,7 @@ from typing import Any, Iterable, Mapping, Protocol, Sequence
 from tradesys.core.enums import MemoryKind
 from tradesys.core.errors import TenantIsolationError
 from tradesys.core.models import MemoryHit, MemoryRecord
+from tradesys.core.fileio import locked, signature, write_json_atomic
 from tradesys.core.tenancy import TenantContext
 from tradesys.memory.embeddings import Embedder, HashingEmbedder, cosine
 
@@ -65,7 +66,15 @@ class LocalVectorMemory:
         self.client_id = tenant.client_id
         self._embedder = embedder or HashingEmbedder()
         self._path: Path = tenant.memory_path
+        self._mtime = signature(self._path)
         self._rows: list[dict] = self._load()
+
+    def _refresh(self) -> None:
+        """Pick up lessons another process (the scheduler) wrote since we loaded."""
+        current = signature(self._path)
+        if current != self._mtime:
+            self._rows = self._load()
+            self._mtime = current
 
     def _load(self) -> list[dict]:
         if not self._path.exists():
@@ -79,9 +88,8 @@ class LocalVectorMemory:
         return rows
 
     def _flush(self) -> None:
-        tmp = self._path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(self._rows, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(self._path)
+        write_json_atomic(self._path, self._rows)
+        self._mtime = signature(self._path)
 
     def add(self, records: Sequence[MemoryRecord]) -> list[str]:
         for record in records:
@@ -90,11 +98,15 @@ class LocalVectorMemory:
             return []
         vectors = self._embedder.embed([r.text for r in records])
         ids: list[str] = []
-        for record, vector in zip(records, vectors):
-            record_id = record.record_id or uuid.uuid4().hex
-            self._rows.append(_serialise(record, record_id, vector))
-            ids.append(record_id)
-        self._flush()
+        with locked(self._path):
+            # Re-read under the lock: appending to a stale copy would overwrite
+            # whatever another process added since we last loaded.
+            self._rows = self._load()
+            for record, vector in zip(records, vectors):
+                record_id = record.record_id or uuid.uuid4().hex
+                self._rows.append(_serialise(record, record_id, vector))
+                ids.append(record_id)
+            self._flush()
         return ids
 
     def query(
@@ -105,6 +117,7 @@ class LocalVectorMemory:
         kinds: Iterable[MemoryKind] | None = None,
         where: Mapping[str, Any] | None = None,
     ) -> list[MemoryHit]:
+        self._refresh()
         if not self._rows or k <= 0:
             return []
         wanted_kinds = {kind.value for kind in kinds} if kinds else None
@@ -138,6 +151,7 @@ class LocalVectorMemory:
         self, limit: int = 20, kinds: Iterable[MemoryKind] | None = None
     ) -> list[MemoryRecord]:
         """Newest records first. Chronological, not similarity-ranked."""
+        self._refresh()
         wanted_kinds = {kind.value for kind in kinds} if kinds else None
         records = [
             MemoryRecord(
@@ -157,4 +171,5 @@ class LocalVectorMemory:
         return records[:limit]
 
     def count(self) -> int:
+        self._refresh()
         return len(self._rows)

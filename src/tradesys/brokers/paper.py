@@ -8,6 +8,7 @@ from pathlib import Path
 from tradesys.core.enums import OrderStatus, OrderType, Side, TimeInForce
 from tradesys.core.errors import BrokerError
 from tradesys.core.models import AccountSnapshot, OrderRequest, OrderResult, Position
+from tradesys.core.fileio import locked, signature, write_json_atomic
 from tradesys.core.tenancy import TenantContext
 from tradesys.data.market_data import MarketDataProvider
 
@@ -32,7 +33,16 @@ class PaperBroker:
         self.paper = True
         self._market_data = market_data
         self._path: Path = tenant.data_dir / "paper_account.json"
+        self._starting_cash = starting_cash
+        self._mtime = signature(self._path)
         self._state = self._load(starting_cash)
+
+    def _refresh(self) -> None:
+        """Re-read the ledger if another process (the scheduler) traded since."""
+        current = signature(self._path)
+        if current != self._mtime:
+            self._state = self._load(self._starting_cash)
+            self._mtime = current
 
     def _load(self, starting_cash: float) -> dict:
         if self._path.exists():
@@ -43,11 +53,11 @@ class PaperBroker:
         return {"client_id": self.client_id, "cash": starting_cash, "positions": {}}
 
     def _flush(self) -> None:
-        tmp = self._path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(self._state), encoding="utf-8")
-        tmp.replace(self._path)
+        write_json_atomic(self._path, self._state)
+        self._mtime = signature(self._path)
 
     def positions(self) -> list[Position]:
+        self._refresh()
         result: list[Position] = []
         for symbol, holding in self._state["positions"].items():
             result.append(
@@ -76,7 +86,13 @@ class PaperBroker:
         self._tenant.assert_owns(order)
         if order.qty <= 0:
             raise BrokerError("order quantity must be positive")
+        with locked(self._path):
+            # Fill against the ledger as it is on disk now, not as this process
+            # last saw it: a stale copy would overwrite the other process's fills.
+            self._state = self._load(self._starting_cash)
+            return self._fill(order)
 
+    def _fill(self, order: OrderRequest) -> OrderResult:
         price = order.limit_price or self._market_data.last_price(order.symbol)
         notional = price * order.qty
         holdings = self._state["positions"]
@@ -124,6 +140,7 @@ class PaperBroker:
         )
 
     def close_position(self, symbol: str) -> OrderResult | None:
+        self._refresh()
         holding = self._state["positions"].get(symbol.upper())
         if not holding:
             return None

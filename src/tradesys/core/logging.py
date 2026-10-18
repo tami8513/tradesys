@@ -14,6 +14,10 @@ def configure(level: str = "INFO") -> None:
         level=getattr(logging, level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)-7s [%(name)s] %(message)s",
     )
+    # httpx logs every request URL at INFO. Finnhub takes its API key as a query
+    # parameter, so that would write the key into the server logs in plain text.
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     _CONFIGURED = True
 
 
