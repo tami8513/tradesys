@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from tradesys.clients.secrets import BrokerCredentials
 from tradesys.core.enums import OrderStatus, OrderType, Side
@@ -19,6 +20,7 @@ _STATUS_MAP = {
     "expired": OrderStatus.CANCELED,
     "rejected": OrderStatus.REJECTED,
 }
+_FINAL_STATES = {"filled", "canceled", "expired", "rejected"}
 
 
 class AlpacaBroker:
@@ -35,6 +37,8 @@ class AlpacaBroker:
         credentials: BrokerCredentials,
         *,
         timeout: float = 10.0,
+        fill_timeout: float = 20.0,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._tenant = tenant
         self.client_id = tenant.client_id
@@ -45,8 +49,18 @@ class AlpacaBroker:
             "APCA-API-SECRET-KEY": credentials.secret_key,
         }
         self._timeout = timeout
+        self._fill_timeout = fill_timeout
+        self._sleep = sleep
 
-    def _request(self, method: str, path: str, payload: Mapping[str, Any] | None = None) -> Any:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        payload: Mapping[str, Any] | None = None,
+        *,
+        params: Mapping[str, str] | None = None,
+        missing_ok: bool = False,
+    ) -> Any:
         try:
             import httpx
         except ImportError as exc:  # pragma: no cover - optional dependency
@@ -56,8 +70,11 @@ class AlpacaBroker:
             f"{self._base_url}{path}",
             headers=self._headers,
             json=dict(payload) if payload else None,
+            params=dict(params) if params else None,
             timeout=self._timeout,
         )
+        if missing_ok and response.status_code == 404:
+            return None
         if response.status_code >= 400:
             raise BrokerError(f"alpaca {method} {path} -> {response.status_code}: {response.text}")
         if not response.content:
@@ -108,11 +125,46 @@ class AlpacaBroker:
                 body["take_profit"] = {"limit_price": f"{order.take_profit:.2f}"}
 
         payload = self._request("POST", "/v2/orders", body)
+        payload = self._await_final(payload)
+        if payload.get("status") not in _FINAL_STATES:
+            # The journal opens a trade only on a fill it saw. An entry still working
+            # after the wait would fill later as a position nobody manages, so it is
+            # pulled; if it filled in the meantime, the re-read reports the fill.
+            self._request("DELETE", f"/v2/orders/{payload['id']}", missing_ok=True)
+            payload = self._request("GET", f"/v2/orders/{payload['id']}")
+        if payload.get("status") != "filled" and float(payload.get("filled_qty") or 0) > 0:
+            # A partial fill on a pulled entry is not journaled either, so the shares
+            # it bought are sold straight back rather than left unmanaged.
+            self._request("DELETE", f"/v2/positions/{order.symbol.upper()}", missing_ok=True)
         return _parse_order(self.client_id, payload)
 
     def close_position(self, symbol: str) -> OrderResult | None:
-        payload = self._request("DELETE", f"/v2/positions/{symbol.upper()}")
-        return _parse_order(self.client_id, payload) if payload else None
+        symbol = symbol.upper()
+        # A bracket's stop and target legs hold the shares; Alpaca refuses to sell
+        # held shares, so the legs are cancelled before the position is closed.
+        open_orders = self._request(
+            "GET", "/v2/orders", params={"status": "open", "symbols": symbol}
+        ) or []
+        for order in open_orders:
+            self._request("DELETE", f"/v2/orders/{order['id']}", missing_ok=True)
+        payload = self._request("DELETE", f"/v2/positions/{symbol}", missing_ok=True)
+        if not payload:
+            return None
+        return _parse_order(self.client_id, self._await_final(payload))
+
+    def _await_final(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Re-read a just-submitted order until it fills or the wait runs out.
+
+        Alpaca acknowledges a market order before it executes, so the submit
+        response carries no fill price. The P&L is booked from the fill price.
+        """
+        waited = 0.0
+        step = 0.5
+        while payload.get("status") not in _FINAL_STATES and waited < self._fill_timeout:
+            self._sleep(step)
+            waited += step
+            payload = self._request("GET", f"/v2/orders/{payload['id']}")
+        return payload
 
 
 def _parse_order(client_id: str, payload: Mapping[str, Any]) -> OrderResult:
