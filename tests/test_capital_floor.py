@@ -213,27 +213,33 @@ def test_floor_of_100_percent_is_rejected():
 
 # ------------------------------------------------------------ client choice
 
-def test_client_track_choice_overrides_only_the_floor(tmp_path):
-    from tradesys.clients.tracks import read_track, write_track
+def system_and_dir(tmp_path):
     from tradesys.core.config import Settings
     from tradesys.orchestration.engine import TradingSystem
 
     root = Path(__file__).resolve().parent.parent
     system = TradingSystem(Settings(clients_dir=root / "clients", data_dir=tmp_path))
+    return system, system.tenant("tal_dahan").data_dir
 
-    tenant_dir = system.tenant("tal_dahan").data_dir
-    write_track(tenant_dir, "capital_preservation", 100_000.0)
-    choice = read_track(tenant_dir)
-    assert choice.track == "capital_preservation" and choice.base == 100_000.0
+
+def test_risk_level_sets_all_four_loss_limits_together(tmp_path):
+    from tradesys.clients.profile import RISK_LEVELS
+    from tradesys.clients.tracks import read_track, write_track
+
+    system, tenant_dir = system_and_dir(tmp_path)
+    write_track(tenant_dir, 2, 100_000.0)
+    assert read_track(tenant_dir).level == 2
 
     session = system.for_client("tal_dahan")
     try:
-        default = system.registry.load("tal_dahan").risk
-        chosen = session.profile.risk
-        assert chosen.capital_floor_pct == 95.0
+        chosen, level = session.profile.risk, RISK_LEVELS[2]
+        assert chosen.capital_floor_pct == level.capital_floor_pct
         assert chosen.capital_floor_base == 100_000.0
-        assert chosen.max_drawdown_pct == default.max_drawdown_pct
-        assert chosen.risk_per_trade_pct == default.risk_per_trade_pct
+        assert chosen.risk_per_trade_pct == level.risk_per_trade_pct
+        assert chosen.max_daily_loss_pct == level.max_daily_loss_pct
+        assert chosen.max_drawdown_pct == level.max_drawdown_pct
+        default = system.registry.load("tal_dahan").risk
+        assert chosen.max_position_pct == default.max_position_pct
     finally:
         session.close()
 
@@ -241,18 +247,67 @@ def test_client_track_choice_overrides_only_the_floor(tmp_path):
     assert read_track(tenant_dir) is None
 
 
-def test_unknown_track_cannot_be_written(tmp_path):
+def test_level_beyond_protection_needs_consent(tmp_path):
     from tradesys.clients.tracks import write_track
 
     with pytest.raises(ConfigError):
-        write_track(tmp_path, "all_in", 100_000.0)
+        write_track(tmp_path, 4, 100_000.0, max_level=5)
+    write_track(tmp_path, 4, 100_000.0, max_level=5, acknowledged=True)
 
 
-def test_a_track_needs_a_base():
+def test_level_above_the_operator_cap_cannot_be_written(tmp_path):
     from tradesys.clients.tracks import write_track
 
     with pytest.raises(ConfigError):
-        write_track(Path("."), "balanced", 0.0)
+        write_track(tmp_path, 5, 100_000.0, acknowledged=True, max_level=3)
+
+
+def test_operator_cap_wins_over_a_stored_choice():
+    """A choice saved while permitted is clamped if the operator later lowers the cap."""
+    from dataclasses import replace as dc_replace
+
+    from tradesys.clients.profile import RISK_LEVELS
+    from tradesys.clients.tracks import TrackChoice, apply_track
+
+    capped = dc_replace(profile_with_floor(None), max_risk_level=3)
+    applied = apply_track(capped, TrackChoice(5, 100_000.0, "", acknowledged=True))
+    assert applied.risk.max_drawdown_pct == RISK_LEVELS[3].max_drawdown_pct
+
+
+def test_unacknowledged_level_beyond_protection_is_not_applied():
+    from dataclasses import replace as dc_replace
+
+    from tradesys.clients.profile import RISK_LEVELS
+    from tradesys.clients.tracks import TrackChoice, apply_track
+
+    allowed = dc_replace(profile_with_floor(None), max_risk_level=5)
+    applied = apply_track(allowed, TrackChoice(5, 100_000.0, "", acknowledged=False))
+    assert applied.risk.capital_floor_pct == RISK_LEVELS[3].capital_floor_pct
+
+
+def test_choice_saved_before_the_meter_reads_as_a_level(tmp_path):
+    import json
+
+    from tradesys.clients.tracks import TRACK_FILE, read_track
+
+    (tmp_path / TRACK_FILE).write_text(
+        json.dumps({"track": "capital_preservation", "base": 90_000.0}), encoding="utf-8"
+    )
+    assert read_track(tmp_path).level == 1
+
+
+def test_unknown_level_cannot_be_written(tmp_path):
+    from tradesys.clients.tracks import write_track
+
+    with pytest.raises(ConfigError):
+        write_track(tmp_path, 9, 100_000.0)
+
+
+def test_a_level_needs_a_base():
+    from tradesys.clients.tracks import write_track
+
+    with pytest.raises(ConfigError):
+        write_track(Path("."), 2, 0.0)
 
 
 def test_choosing_a_track_after_losses_does_not_lock_the_account(tmp_path, clock):
@@ -269,7 +324,7 @@ def test_choosing_a_track_after_losses_does_not_lock_the_account(tmp_path, clock
     journal.roll_session(clock.now().date(), 100_000.0)  # first equity ever: 100k
 
     chosen = apply_track(
-        base_profile, TrackChoice("capital_preservation", 85_000.0, "")
+        base_profile, TrackChoice(1, 85_000.0, "")
     )
     risk = RiskManager(risk.tenant, chosen, journal, clock)
 

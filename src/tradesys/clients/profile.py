@@ -12,7 +12,43 @@ CAPITAL_TRACKS: dict[str, float] = {
     "balanced": 90.0,
     "growth": 80.0,
 }
-"""Named capital-floor presets a client chooses between. Value = floor %."""
+"""Named capital-floor presets an operator can set in YAML. Value = floor %."""
+
+
+@dataclass(frozen=True, slots=True)
+class RiskLevel:
+    """One notch on the client's risk meter. Moves every loss limit together.
+
+    A meter that moved only the floor would change nothing while a tighter
+    drawdown halt binds first, so each level sets all four limits coherently:
+    the drawdown halt sits exactly at the floor's distance from the base.
+    """
+
+    level: int
+    name: str
+    capital_floor_pct: float
+    risk_per_trade_pct: float
+    max_daily_loss_pct: float
+    max_drawdown_pct: float
+
+    @property
+    def beyond_protection(self) -> bool:
+        return self.level > PROTECTED_RISK_LEVEL
+
+
+PROTECTED_RISK_LEVEL = 3
+RISK_LEVELS: dict[int, RiskLevel] = {
+    lvl.level: lvl
+    for lvl in (
+        RiskLevel(1, "שמרני", 95.0, 0.25, 1.0, 5.0),
+        RiskLevel(2, "מאוזן", 90.0, 0.5, 1.5, 10.0),
+        RiskLevel(3, "צמיחה", 80.0, 0.75, 2.5, 20.0),
+        RiskLevel(4, "אגרסיבי", 70.0, 1.0, 3.0, 30.0),
+        RiskLevel(5, "ספקולטיבי", 60.0, 1.5, 4.0, 40.0),
+    )
+}
+TRACK_LEVELS = {"capital_preservation": 1, "balanced": 2, "growth": 3}
+"""Choices saved before the meter existed, read as the matching level."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,9 +197,14 @@ class ClientProfile:
     max_holding_days: int | None = None   # None disables the time stop
     tags: tuple[str, ...] = ()
     metadata: dict[str, str] = field(default_factory=dict)
+    # Highest risk-meter level the operator lets this client choose. Levels above
+    # PROTECTED_RISK_LEVEL go beyond capital protection and need explicit consent.
+    max_risk_level: int = PROTECTED_RISK_LEVEL
 
     def __post_init__(self) -> None:
         validate_client_id(self.client_id)
+        if self.max_risk_level not in RISK_LEVELS:
+            raise ConfigError(f"max_risk_level must be one of {sorted(RISK_LEVELS)}")
         if not self.watchlist:
             raise ConfigError(f"client {self.client_id} has an empty watchlist")
         if self.monitor_interval_seconds <= 0:

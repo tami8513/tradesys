@@ -6,6 +6,7 @@ from typing import Any, Mapping
 
 from tradesys.clients.profile import (
     CAPITAL_TRACKS,
+    PROTECTED_RISK_LEVEL,
     BrokerConfig,
     ClientProfile,
     RiskProfile,
@@ -141,6 +142,7 @@ def parse_profile(doc: Mapping[str, Any], path: Path) -> ClientProfile:
         ),
         tags=tuple(str(t) for t in doc.get("tags", ())),
         metadata={str(k): str(v) for k, v in (doc.get("metadata") or {}).items()},
+        max_risk_level=int(doc.get("max_risk_level", PROTECTED_RISK_LEVEL)),
     )
 
 

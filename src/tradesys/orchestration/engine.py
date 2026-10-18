@@ -161,8 +161,8 @@ class TradingSystem:
 
     def for_client(self, client_id: str) -> "ClientSession":
         tenant = self.tenant(client_id)
-        # The client's own track choice overrides only the floor; every other
-        # limit stays as the operator set it in the profile YAML.
+        # The client's risk-meter level sets the four loss limits, capped by the
+        # operator's max_risk_level; everything else stays as the YAML sets it.
         profile = apply_track(
             self.registry.load(client_id), read_track(tenant.data_dir)
         )

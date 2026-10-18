@@ -8,6 +8,8 @@ memory_top_k: 5
 monitor_interval_seconds: 30      # how often PositionMonitor polls open positions
 max_holding_days: 10              # time stop; omit or null to disable
 tags: [founder, small_cap_momentum]
+# הרמה הגבוהה ביותר במד הסיכון שהלקוח רשאי לבחור. 4-5 חורגות משמירת הקרן.
+max_risk_level: 5
 
 broker:
   name: paper            # paper | alpaca

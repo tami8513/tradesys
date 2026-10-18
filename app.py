@@ -1268,58 +1268,164 @@ def tab_billing(client_id: str, snapshot: dict, demo: bool = False) -> None:
         )
 
 
-TRACK_COPY = {
-    "capital_preservation": (
-        "שמירת קרן",
-        "רצפה ב-95% מהקרן. העסקאות קטנות מאוד, והמטרה העיקרית היא לא להפסיד.",
-    ),
-    "balanced": (
-        "מאוזן",
-        "רצפה ב-90% מהקרן. איזון בין צמיחה להגנה.",
-    ),
-    "growth": (
-        "צמיחה",
-        "רצפה ב-80% מהקרן. עסקאות גדולות יותר ותנודתיות גבוהה יותר.",
-    ),
-}
+def risk_gauge(value: float, maximum: float, title: str, bands: list[tuple[float, str]]) -> go.Figure:
+    fig = go.Figure(
+        go.Indicator(
+            mode="gauge+number",
+            value=value,
+            number={"font": {"size": 34, "color": PALETTE["text"]}},
+            title={"text": title, "font": {"size": 14, "color": PALETTE["muted"]}},
+            gauge={
+                "axis": {"range": [0, maximum], "tickcolor": PALETTE["muted"]},
+                "bar": {"color": PALETTE["text"], "thickness": 0.25},
+                "bgcolor": "rgba(0,0,0,0)",
+                "borderwidth": 0,
+                "steps": [
+                    {"range": [low, high], "color": color}
+                    for (low, color), (high, _) in zip(bands, bands[1:] + [(maximum, "")])
+                ],
+            },
+        )
+    )
+    fig.update_layout(
+        height=230,
+        margin=dict(l=20, r=20, t=40, b=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color=PALETTE["muted"]),
+    )
+    return fig
 
 
 def tab_protection(client_id: str, snapshot: dict, session, armed: bool) -> None:
-    """בחירת מסלול הגנת קרן, ומצב התיק מול הרצפה."""
-    from tradesys.clients.tracks import track_of, write_track
+    """מד סיכון: בחירת רמת הסיכון, ומצב התיק מול המגבלות שלה."""
+    from tradesys.clients.profile import PROTECTED_RISK_LEVEL, RISK_LEVELS
+    from tradesys.clients.tracks import effective_level, read_track, write_track
 
-    st.markdown("##### מסלול הגנת קרן")
+    st.markdown("##### מד סיכון")
     st.caption(
-        "המערכת קובעת את גודל כל עסקה כך שגם אם כל הסטופים הפתוחים יופעלו בבת אחת, "
-        "התיק יישאר מעל הרצפה שבחרת. ככל שמתקרבים לרצפה העסקאות קטנות, "
-        "וברצפה עצמה לא נפתחות עסקאות חדשות."
+        "רמת הסיכון קובעת יחד את כל מגבלות ההפסד: רצפת הקרן, הסיכון בכל עסקה, "
+        "ההפסד היומי המרבי והעצירה בירידה מהשיא. רמות 1–3 נמצאות בתוך שמירת הקרן."
     )
 
-    current = track_of(session.profile)
-    columns = st.columns(3)
-    for column, (track, (title, body)) in zip(columns, TRACK_COPY.items()):
-        with column:
-            selected = track == current
-            border = PALETTE["gold"] if selected else PALETTE["border"]
-            badge = " · נבחר" if selected else ""
-            st.markdown(
-                f'<div class="ts-card" style="border-color:{border}">'
-                f'<div class="ts-card-label">{esc(title)}{esc(badge)}</div>'
-                f'<div class="ts-card-sub" style="font-size:13px">{esc(body)}</div>'
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-            if st.button(
-                "בחר מסלול" if not selected else "המסלול הנוכחי",
-                key=f"track_{track}",
-                disabled=not armed or selected,
-                use_container_width=True,
-            ):
-                write_track(session.tenant.data_dir, track, snapshot["equity"])
-                invalidate()
-                st.rerun()
+    choice = read_track(session.tenant.data_dir)
+    active = effective_level(session.profile, choice)
+    equity = snapshot["equity"]
+    drawdown = snapshot["drawdown_pct"]
+    limit = snapshot["max_drawdown_pct"]
 
-    if current is not None and st.button("בטל רצפה", disabled=not armed):
+    gauges = st.columns(2)
+    green, amber, red = "rgba(38,208,124,.35)", "rgba(245,165,36,.35)", "rgba(242,84,91,.4)"
+    with gauges[0]:
+        st.plotly_chart(
+            risk_gauge(
+                active.level if active else 0,
+                len(RISK_LEVELS),
+                f"רמת סיכון · {active.name}" if active else "רמת סיכון · ברירת מחדל",
+                [(0, green), (PROTECTED_RISK_LEVEL, red)],
+            ),
+            use_container_width=True,
+            config={"displayModeBar": False},
+        )
+    with gauges[1]:
+        st.plotly_chart(
+            risk_gauge(
+                round(drawdown, 2),
+                limit,
+                f"ירידה מהשיא מול המגבלה ({limit}%)",
+                [(0, green), (limit * 0.5, amber), (limit * 0.8, red)],
+            ),
+            use_container_width=True,
+            config={"displayModeBar": False},
+        )
+
+    max_level = session.profile.max_risk_level
+    selected = st.select_slider(
+        "בחר רמת סיכון",
+        options=list(RISK_LEVELS),
+        value=active.level if active else 2,
+        format_func=lambda lvl: f"{lvl} · {RISK_LEVELS[lvl].name}",
+        key=f"risk_pick_{client_id}",
+    )
+    target = RISK_LEVELS[selected]
+    current = session.profile.risk
+    st.dataframe(
+        pd.DataFrame(
+            {
+                "מגבלה": [
+                    "רצפת קרן",
+                    "סיכון מרבי בעסקה",
+                    "הפסד יומי מרבי",
+                    "עצירה בירידה מהשיא",
+                ],
+                "עכשיו": [
+                    f"{current.capital_floor_pct:g}%" if current.capital_floor_pct else "—",
+                    f"{current.risk_per_trade_pct:g}%",
+                    f"{current.max_daily_loss_pct:g}%",
+                    f"{current.max_drawdown_pct:g}%",
+                ],
+                f"ברמה {selected}": [
+                    f"{target.capital_floor_pct:g}% ({money(equity * target.capital_floor_pct / 100)})",
+                    f"{target.risk_per_trade_pct:g}% ({money(equity * target.risk_per_trade_pct / 100)})",
+                    f"{target.max_daily_loss_pct:g}% ({money(equity * target.max_daily_loss_pct / 100)})",
+                    f"{target.max_drawdown_pct:g}%",
+                ],
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    permitted = selected <= max_level
+    acknowledged = False
+    if not permitted:
+        st.info(
+            f"רמה {selected} דורשת אישור של מנהל המערכת. הרמה המרבית שאושרה לחשבון "
+            f"זה היא {max_level}.",
+            icon="🔒",
+        )
+    elif target.beyond_protection:
+        worst = 100 - target.capital_floor_pct
+        st.error(
+            f"רמה זו חורגת משמירת הקרן. התיק עלול לרדת עד {worst:g}% "
+            f"(כ-{money(equity * worst / 100)}) לפני שהמסחר ייעצר, ופער מחיר (גאפ) "
+            "אחרי דוח או חדשות עלול להגדיל את ההפסד גם מעבר לכך.",
+            icon="⚠️",
+        )
+        acknowledged = st.checkbox(
+            f"קראתי והבנתי: ברמה זו אני עלול/ה להפסיד {worst:g}% מהקרן ויותר, "
+            "והבחירה היא על אחריותי.",
+            key=f"risk_ack_{client_id}_{selected}",
+        )
+    if permitted and drawdown >= target.max_drawdown_pct:
+        st.warning(
+            f"הירידה הנוכחית ({drawdown:.2f}%) כבר גבוהה ממגבלת הרמה הזו "
+            f"({target.max_drawdown_pct:g}%). בחירה בה תעצור את המסחר מיד.",
+            icon="🛑",
+        )
+
+    unchanged = active is not None and selected == active.level
+    if st.button(
+        "החל רמת סיכון",
+        type="primary",
+        disabled=(
+            not armed
+            or not permitted
+            or unchanged
+            or (target.beyond_protection and not acknowledged)
+        ),
+        use_container_width=True,
+    ):
+        write_track(
+            session.tenant.data_dir,
+            selected,
+            equity,
+            acknowledged=acknowledged,
+            max_level=max_level,
+        )
+        invalidate()
+        st.rerun()
+
+    if choice is not None and st.button("חזרה להגדרות ברירת המחדל", disabled=not armed):
         write_track(session.tenant.data_dir, None)
         invalidate()
         st.rerun()
@@ -1327,7 +1433,7 @@ def tab_protection(client_id: str, snapshot: dict, session, armed: bool) -> None
     floor = snapshot["floor"]
     st.markdown("")
     if floor is None:
-        st.info("לא נבחר מסלול. המערכת פועלת לפי מגבלות הסיכון הרגילות בלבד.")
+        st.info("לא נבחרה רמת סיכון. המערכת פועלת לפי מגבלות ברירת המחדל של החשבון.")
     else:
         metrics = st.columns(4)
         metrics[0].metric("רצפה", money(floor["floor"]))
@@ -1335,7 +1441,7 @@ def tab_protection(client_id: str, snapshot: dict, session, armed: bool) -> None
         metrics[2].metric("בסיכון בפוזיציות פתוחות", money(floor["open_risk"]))
         metrics[3].metric("אם כל הסטופים יופעלו עכשיו", money(floor["worst_case"]))
         st.caption(
-            f"הרצפה מחושבת משווי התיק ביום בחירת המסלול: {money(floor['base'])}."
+            f"הרצפה מחושבת משווי התיק ביום בחירת הרמה: {money(floor['base'])}."
         )
         if floor["available"] <= 0:
             st.warning("התיק ברצפה. עסקאות חדשות לא ייפתחו עד שהכרית תתאושש.", icon="🛡")
@@ -1587,7 +1693,7 @@ def client_portal(client_id: str, demo: bool = False) -> None:
     tabs = st.tabs(
         [
             "סקירה כללית",
-            "הגנת קרן",
+            "מד סיכון",
             "גרפים",
             "פעילות הסוכנים",
             "חיבור ברוקר",
