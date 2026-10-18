@@ -420,14 +420,31 @@ def login_screen() -> None:
 
         if mode == "כניסת לקוח":
             st.markdown("##### התחברות לחשבון")
-            client_id = st.text_input(
-                # A real id as placeholder looks like a filled field; users submitted it empty.
-                "מזהה לקוח", key="login_client", placeholder="הקלד כאן את מזהה הלקוח"
-            )
-            password = st.text_input("סיסמה", type="password", key="login_password")
-            if st.button("התחבר", use_container_width=True, type="primary"):
-                if not client_id or not password:
-                    st.warning("יש למלא מזהה לקוח וסיסמה.")
+            # A form, not loose inputs: a loose text_input only reports its value on
+            # Enter or blur, so a browser-autofilled field clicked straight through to
+            # the button arrived empty. Form submit sends every field's current value.
+            with st.form("client_login", border=False):
+                client_id = st.text_input(
+                    # A real id as placeholder looks like a filled field; users submitted it empty.
+                    "מזהה לקוח",
+                    key="login_client",
+                    placeholder="הקלד כאן את מזהה הלקוח",
+                    autocomplete="username",
+                )
+                password = st.text_input(
+                    "סיסמה",
+                    type="password",
+                    key="login_password",
+                    autocomplete="current-password",
+                )
+                submitted = st.form_submit_button(
+                    "התחבר", use_container_width=True, type="primary"
+                )
+            if submitted:
+                if not client_id.strip():
+                    st.warning("לא הוזן מזהה לקוח.")
+                elif not password:
+                    st.warning("לא הוזנה סיסמה.")
                 else:
                     # Ids are stored lowercase; "Tal_dahan" typed on a phone is the same client.
                     account = get_account_store().authenticate(
@@ -455,8 +472,17 @@ def login_screen() -> None:
                     icon="⛔",
                 )
             else:
-                passcode = st.text_input("קוד גישה", type="password", key="login_admin")
-                if st.button("כניסה לפורטל ניהול", use_container_width=True):
+                with st.form("admin_login", border=False):
+                    passcode = st.text_input(
+                        "קוד גישה",
+                        type="password",
+                        key="login_admin",
+                        autocomplete="current-password",
+                    )
+                    submitted = st.form_submit_button(
+                        "כניסה לפורטל ניהול", use_container_width=True
+                    )
+                if submitted:
                     import hmac
 
                     if passcode and hmac.compare_digest(passcode, expected):
