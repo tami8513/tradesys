@@ -129,3 +129,61 @@ def test_a_full_cycle_writes_the_agent_event_log(tmp_path):
     risk_events = [e for e in logged if e["agent"] == "risk"]
     assert len(scout_events) == cycle.candidates
     assert len(risk_events) == cycle.approvals + len(cycle.rejections) + int(cycle.halted)
+
+
+def open_position(qty=100, entry=20.0, stop=18.0) -> TradeRecord:
+    return TradeRecord(
+        trade_id=99, client_id="tal_dahan", symbol="RIVN", setup=SetupType.BREAKOUT,
+        side=Side.BUY, qty=qty, entry_price=entry, stop_price=stop, opened_at=T0,
+        initial_stop=stop,
+    )
+
+
+def stress_card(open_trades=(), r_history=(), equity=100_000.0, **risk_overrides):
+    from dataclasses import replace
+
+    from conftest import make_profile
+    from tradesys.orchestration.agent_report import Book
+
+    risk = replace(make_profile().risk, capital_floor_pct=90.0, **risk_overrides)
+    book = Book("tal_dahan", equity, list(open_trades), risk, list(r_history))
+    cards = build_report(ReportInput([], [], [], 0, 0, [book]))
+    return {c.key: c for c in cards}["stress"]
+
+
+def test_gap_through_stops_beyond_the_daily_limit_is_flagged():
+    # 1000 shares, stop 18 gapped 10% to 16.20: (20 - 16.20) * 1000 = 3.8% of 100k
+    card = stress_card([open_position(qty=1000)])
+    assert card.status == "watch"
+    assert ("פער 10% מעבר לסטופים", "-3.80%") in card.kpis
+
+
+def test_crash_through_the_floor_is_the_worst_grade():
+    # 6000 shares x 20 x 30% = 36k = 36% loss, floor allows 10%
+    card = stress_card([open_position(qty=6000)])
+    assert card.status == "bad"
+    assert any("רצפת הקרן" in f for f in card.findings)
+
+
+def test_losing_streak_to_halt_follows_the_limits():
+    card = stress_card(max_drawdown_pct=2.0, risk_per_trade_pct=0.5, max_daily_loss_pct=1.5)
+    assert ("הפסדים רצופים עד עצירה", "4") in card.kpis
+
+
+def test_simulation_is_deterministic_and_flags_a_fragile_history():
+    losing = [-1.0] * 8 + [0.5] * 4
+    first = stress_card(r_history=losing)
+    second = stress_card(r_history=losing)
+    assert first.kpis == second.kpis
+    assert first.status == "bad"
+
+
+def test_offense_card_reports_how_the_budget_was_spread():
+    events = [
+        event("offense", "sized", detail="1.00|pullback"),
+        event("offense", "sized", detail="0.75|breakout"),
+        event("offense", "sized", detail="0.75|breakout"),
+    ]
+    cards = report(events=events)
+    assert ("גודל מלא (מוכח)", "1") in cards["offense"].kpis
+    assert ("75% (לא מוכח עדיין)", "2") in cards["offense"].kpis

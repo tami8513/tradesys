@@ -100,6 +100,7 @@ def parse_profile(doc: Mapping[str, Any], path: Path) -> ClientProfile:
             trail_activation_r=float(raw_risk.get("trail_activation_r", 1.0)),
             trail_distance_r=float(raw_risk.get("trail_distance_r", 1.0)),
             let_winners_run=bool(raw_risk.get("let_winners_run", False)),
+            conviction_sizing=bool(raw_risk.get("conviction_sizing", False)),
         )
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"{path.name}: invalid risk block ({exc})") from exc

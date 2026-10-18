@@ -178,12 +178,18 @@ class RiskManager(Agent):
         positions: Sequence[Position],
         stats: DayStats,
         regime: MarketRegime | None = None,
+        *,
+        conviction: float = 1.0,
     ) -> RiskDecision:
         """Gate one candidate.
 
         `regime` is passed in rather than fetched so this class stays free of I/O
         and non-determinism. None means the regime could not be read, which is
         treated as blocking for regime-gated setups — see _regime_reason.
+
+        `conviction` is the share of the per-trade risk ceiling to use. It is
+        clamped to (0, 1] here, at the trust boundary: no caller can size a trade
+        above the ceiling the client's risk level set.
         """
         self.tenant.assert_owns(candidate)
         self.tenant.assert_owns(account)
@@ -251,7 +257,9 @@ class RiskManager(Agent):
         if reasons:
             return self._reject(candidate, reasons)
 
-        qty, risk_amount, sizing_reasons = self._size(candidate, account, entry, floor)
+        qty, risk_amount, sizing_reasons = self._size(
+            candidate, account, entry, floor, conviction
+        )
         if qty < 1:
             return self._reject(candidate, sizing_reasons or ["position sizes to zero shares"])
 
@@ -355,12 +363,16 @@ class RiskManager(Agent):
         account: AccountSnapshot,
         entry: WatchlistEntry | None,
         floor: FloorState | None = None,
+        conviction: float = 1.0,
     ) -> tuple[int, float, list[str]]:
         """Volatility-based sizing, then every cap applied as a hard minimum."""
         limits = self.profile.risk
         notes: list[str] = []
 
-        risk_budget = account.equity * (limits.risk_per_trade_pct / 100.0)
+        share = min(1.0, max(0.0, conviction))
+        risk_budget = account.equity * (limits.risk_per_trade_pct / 100.0) * share
+        if share < 1.0:
+            notes.append(f"risk budget at {share:.0%} of the ceiling by conviction")
         if floor is not None and floor.per_trade_budget < risk_budget:
             notes.append(
                 f"risk budget reduced to {floor.per_trade_budget:.2f} by the capital "

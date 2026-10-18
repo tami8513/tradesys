@@ -47,6 +47,8 @@ risk:
   trail_distance_r: 1.0
   # ביעד: נשארים בעסקה אם המגמה עדיין עולה, ונועלים לפחות חצי מרווח היעד.
   let_winners_run: true
+  # סוכן התקפה: תבנית מוכחת מקבלת 100% מתקרת הסיכון, חדשה 75%, מפסידה 50%.
+  conviction_sizing: true
 
 watchlist:
   - symbol: KULR

@@ -116,6 +116,12 @@ class RiskProfile:
     # selling, locking in at least half the target gain. Needs the trail to exit.
     let_winners_run: bool = False
 
+    # --- offense ------------------------------------------------------------
+    # Rank each cycle's ideas by this tenant's proven edge and size them at
+    # 100% / 75% / 50% of the per-trade ceiling (proven / unproven / losing
+    # setup). Never above the ceiling: the Risk Manager clamps it.
+    conviction_sizing: bool = False
+
     def __post_init__(self) -> None:
         pcts = {
             "max_drawdown_pct": self.max_drawdown_pct,

@@ -294,26 +294,37 @@ def load_agent_report(client_ids: tuple[str, ...], days: int, bust: int) -> list
     from datetime import timedelta
 
     from app import get_session
-    from tradesys.orchestration.agent_report import ReportInput, build_report
+    from tradesys.orchestration.agent_report import Book, ReportInput, build_report
 
     since = datetime.now(timezone.utc) - timedelta(days=days)
-    trades, events, statuses = [], [], []
+    trades, events, statuses, books = [], [], [], []
     directives = memory = 0
     for client_id in client_ids:
         try:
             session = get_session(client_id)
         except (TradesysError, OSError):
             continue
+        try:
+            equity = session.broker.account().equity
+        except Exception:  # a broker outage must not blank the whole report
+            equity = 0.0   # the stress tests skip a book without equity
         journal = session.journal
-        trades += [
-            t for t in journal.closed_trades(limit=5000)
-            if t.closed_at and t.closed_at >= since
-        ]
+        history = journal.closed_trades(limit=5000)
+        trades += [t for t in history if t.closed_at and t.closed_at >= since]
         events += journal.agent_events(since)
         statuses += journal.order_statuses()
         directives += len(journal.active_directives())
         memory += session.memory.count()
-    return build_report(ReportInput(trades, events, statuses, directives, memory))
+        books.append(
+            Book(
+                client_id,
+                equity,
+                journal.open_trades(),
+                session.profile.risk,
+                [t.r_multiple() for t in history],
+            )
+        )
+    return build_report(ReportInput(trades, events, statuses, directives, memory, books))
 
 
 def render_agents(client_ids: tuple[str, ...], bust: int) -> None:

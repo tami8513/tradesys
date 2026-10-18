@@ -5,6 +5,7 @@ from datetime import datetime
 
 from tradesys.agents.execution import ExecutionAgent, ExecutionOutcome
 from tradesys.agents.monitor import MonitorReport, PositionMonitor
+from tradesys.agents.offense import OffenseAgent
 from tradesys.agents.reflection import ReflectionAgent
 from tradesys.agents.risk_manager import RiskDecision, RiskManager
 from tradesys.agents.scout import ScoutAgent
@@ -220,6 +221,7 @@ class TradingSystem:
             risk=RiskManager(
                 tenant, profile, journal, self.clock, earnings=self._earnings()
             ),
+            offense=OffenseAgent(tenant, profile, journal, self.clock),
             execution=execution,
             reflection=reflection,
             monitor=PositionMonitor(
@@ -249,6 +251,7 @@ class ClientSession:
     memory: VectorMemory
     scout: ScoutAgent
     risk: RiskManager
+    offense: OffenseAgent
     execution: ExecutionAgent
     reflection: ReflectionAgent
     monitor: PositionMonitor
@@ -304,10 +307,17 @@ class ClientSession:
         candidates = self.scout.scan()
         report.candidates = len(candidates)
 
-        for candidate in candidates:
+        offense_on = self.profile.risk.conviction_sizing
+        plan = self.offense.plan(candidates) if offense_on else [(c, 1.0) for c in candidates]
+
+        for candidate, conviction in plan:
             events.append(("scout", "candidate", candidate.symbol, candidate.setup.value))
+            if offense_on:
+                events.append(
+                    ("offense", "sized", candidate.symbol, f"{conviction:.2f}|{candidate.setup.value}")
+                )
             decision: RiskDecision = self.risk.evaluate(
-                candidate, account, positions, stats, regime
+                candidate, account, positions, stats, regime, conviction=conviction
             )
             if not decision.approved:
                 report.rejections.append((candidate.symbol, decision.reasons))

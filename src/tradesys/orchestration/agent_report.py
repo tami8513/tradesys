@@ -8,13 +8,22 @@ person using this report to decide what to change.
 
 from __future__ import annotations
 
+import math
+import random
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
+from tradesys.agents.offense import CONVICTION, PROVEN_TRADES, SetupEdge
+from tradesys.clients.profile import RiskProfile
+from tradesys.core.enums import Side
 from tradesys.core.models import TradeRecord
 
 MIN_TRADES = 5
+GAP_THROUGH_STOP = 0.10
+CRASH = 0.30
+SIM_PATHS = 1000
+SIM_TRADES = 100
 SETUP_NAMES = {
     "breakout": "פריצה",
     "pullback": "תיקון במגמה",
@@ -41,22 +50,36 @@ class AgentCard:
 
 
 @dataclass(frozen=True, slots=True)
+class Book:
+    """One tenant's live exposure, for the stress tests."""
+
+    client_id: str
+    equity: float
+    open_trades: Sequence[TradeRecord]
+    risk: RiskProfile
+    r_history: Sequence[float]           # every closed trade's R-multiple, all time
+
+
+@dataclass(frozen=True, slots=True)
 class ReportInput:
     trades: Sequence[TradeRecord]        # closed trades in the period
     events: Sequence[dict[str, Any]]     # agent_events rows in the period
     order_statuses: Sequence[str]
     active_directives: int
     memory_records: int
+    books: Sequence[Book] = ()
 
 
 def build_report(data: ReportInput) -> list[AgentCard]:
     cards = [
         _scout(data),
+        _offense(data),
         _risk(data),
         _execution(data),
         _exits(data),
         _learning(data),
         _efficiency(data),
+        _stress(data),
     ]
     return [_head(cards), *cards]
 
@@ -291,6 +314,139 @@ def _efficiency(data: ReportInput) -> AgentCard:
             "אל תעבור לכסף אמיתי לפני שזה משתפר."
         )
     card.status = "good" if profit_factor >= 1.5 else "watch" if profit_factor >= 1 else "bad"
+    return card
+
+
+def _offense(data: ReportInput) -> AgentCard:
+    card = AgentCard(
+        "offense",
+        "סוכן התקפה",
+        "מרכז את תקציב הסיכון במה שהוכיח את עצמו: תבנית עם רקורד מוכח מקבלת 100% "
+        "מתקרת הסיכון, תבנית חדשה 75% ותבנית מפסידה 50%. מסדר את ההזדמנויות כך שהחזקות "
+        "תופסות ראשונות את המקומות המוגבלים ביום. לעולם לא חורג מרמת הסיכון שנבחרה.",
+    )
+    sized = _events(data, "offense", "sized")
+    shares = Counter(e["detail"].split("|")[0] for e in sized)
+    names = {f"{v:.2f}": k for k, v in CONVICTION.items()}
+    labels = {"proven": "גודל מלא (מוכח)", "unproven": "75% (לא מוכח עדיין)", "losing": "50% (מפסיד)"}
+    for share, count in sorted(shares.items(), reverse=True):
+        card.kpis.append((labels.get(names.get(share, ""), share), str(count)))
+
+    by_setup: dict[str, list[float]] = {}
+    for trade in data.trades:
+        by_setup.setdefault(trade.setup.value, []).append(trade.r_multiple())
+    for setup, rs in sorted(by_setup.items()):
+        edge = SetupEdge(len(rs), sum(rs) / len(rs))
+        name = SETUP_NAMES.get(setup, setup)
+        if edge.verdict == "proven":
+            card.findings.append(f"'{name}' הוכיחה את עצמה ({edge.expectancy:+.2f}R) ומקבלת גודל מלא.")
+        elif edge.verdict == "losing":
+            card.findings.append(
+                f"'{name}' מפסידה ({edge.expectancy:+.2f}R על {edge.trades}) ומקבלת חצי גודל. "
+                "אם זה נמשך, עדיף לחסום אותה לגמרי."
+            )
+        elif edge.trades < PROVEN_TRADES:
+            card.findings.append(
+                f"'{name}': {edge.trades} מתוך {PROVEN_TRADES} עסקאות שנדרשות כדי לקבל גודל מלא."
+            )
+    if sized:
+        losing = any(SetupEdge(len(r), sum(r) / len(r)).verdict == "losing" for r in by_setup.values())
+        card.status = "watch" if losing else "good"
+    return card
+
+
+def _loss_pct(pct: float) -> str:
+    return f"-{pct:.2f}%" if pct > 0 else "0.00%"
+
+
+def _book_loss(book: Book, price_of) -> float:
+    """Loss if every open long were marked at price_of(trade)."""
+    return sum(
+        max(0.0, (t.entry_price - price_of(t)) * t.qty)
+        for t in book.open_trades
+        if t.side is Side.BUY
+    )
+
+
+def _breach_odds(book: Book, seed: int = 7) -> float | None:
+    """Share of simulated futures that hit the drawdown halt within SIM_TRADES trades.
+
+    Resamples this tenant's own R-multiples at the current per-trade risk; seeded,
+    so the same history always reports the same number.
+    """
+    if len(book.r_history) < MIN_TRADES * 2:
+        return None
+    rng = random.Random(seed)
+    risk = book.risk.risk_per_trade_pct / 100
+    limit = 1 - book.risk.max_drawdown_pct / 100
+    breaches = 0
+    for _ in range(SIM_PATHS):
+        equity = peak = 1.0
+        for _ in range(SIM_TRADES):
+            equity *= 1 + rng.choice(book.r_history) * risk
+            peak = max(peak, equity)
+            if equity <= peak * limit:
+                breaches += 1
+                break
+    return breaches / SIM_PATHS
+
+
+def _stress(data: ReportInput) -> AgentCard:
+    card = AgentCard(
+        "stress",
+        "סוכן מבחני קיצון",
+        "תוקף את התיק לפני שהשוק תוקף: בודק מה יקרה בפער מחיר של 10% מעבר לכל הסטופים, "
+        "בקריסה של 30%, ברצף הפסדים, ומריץ אלף תרחישי עתיד מתוך העסקאות שלך.",
+    )
+    statuses: list[str] = []
+    for book in data.books:
+        if book.equity <= 0:
+            continue
+        tag = f"{book.client_id}: " if len(data.books) > 1 else ""
+        r = book.risk
+        gap = _book_loss(book, lambda t: t.stop_price * (1 - GAP_THROUGH_STOP)) / book.equity * 100
+        crash = _book_loss(book, lambda t: t.entry_price * (1 - CRASH)) / book.equity * 100
+        streak = math.ceil(r.max_drawdown_pct / r.risk_per_trade_pct)
+        odds = _breach_odds(book)
+        floor_room = 100 - r.capital_floor_pct if r.capital_floor_pct else None
+
+        card.kpis += [
+            (f"{tag}פער 10% מעבר לסטופים", _loss_pct(gap)),
+            (f"{tag}קריסה של 30%", _loss_pct(crash)),
+            (f"{tag}הפסדים רצופים עד עצירה", str(streak)),
+        ]
+        if odds is not None:
+            card.kpis.append((f"{tag}סיכוי לעצירה ב-{SIM_TRADES} עסקאות", f"{odds:.0%}"))
+
+        status = "good"
+        if book.open_trades and gap > r.max_daily_loss_pct:
+            status = "watch"
+            card.findings.append(
+                f"{tag}פער מחיר של 10% מעבר לסטופים יגרום להפסד של {gap:.2f}%, יותר ממגבלת "
+                f"ההפסד היומי ({r.max_daily_loss_pct:g}%). כדאי להקטין פוזיציות לפני דוחות וסופי שבוע."
+            )
+        if floor_room is not None and crash > floor_room:
+            status = "bad"
+            card.findings.append(
+                f"{tag}בקריסה של 30% התיק יורד {crash:.2f}%, מתחת לרצפת הקרן ({r.capital_floor_pct:g}%). "
+                "הרצפה היא יעד ולא הבטחה, וזה התרחיש שבו היא נשברת."
+            )
+        if odds is not None and odds > 0.2:
+            status = "bad"
+            card.findings.append(
+                f"{tag}ב-{odds:.0%} מהתרחישים המערכת תגיע לעצירת מסחר תוך {SIM_TRADES} עסקאות. "
+                "הסיכון לעסקה גבוה ביחס לביצועים בפועל: כדאי לרדת ברמת הסיכון."
+            )
+        elif odds is not None and odds > 0.05 and status == "good":
+            status = "watch"
+        if not book.open_trades and odds is None:
+            status = "no_data"
+        statuses.append(status)
+
+    for rank in ("bad", "watch", "good"):
+        if rank in statuses:
+            card.status = rank
+            break
     return card
 
 
