@@ -421,7 +421,8 @@ def login_screen() -> None:
         if mode == "כניסת לקוח":
             st.markdown("##### התחברות לחשבון")
             client_id = st.text_input(
-                "מזהה לקוח", key="login_client", placeholder="tal_dahan"
+                # A real id as placeholder looks like a filled field; users submitted it empty.
+                "מזהה לקוח", key="login_client", placeholder="הקלד כאן את מזהה הלקוח"
             )
             password = st.text_input("סיסמה", type="password", key="login_password")
             if st.button("התחבר", use_container_width=True, type="primary"):
