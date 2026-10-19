@@ -206,9 +206,20 @@ class ClientProfile:
     # Highest risk-meter level the operator lets this client choose. Levels above
     # PROTECTED_RISK_LEVEL go beyond capital protection and need explicit consent.
     max_risk_level: int = PROTECTED_RISK_LEVEL
+    # When positive, the LeaderHunter picks this many of the strongest watchlist
+    # symbols each week and the Scout looks only at them. The watchlist is then
+    # the approved universe, not a list to trade all of.
+    leaders_count: int = 0
+    # Stop distance below entry in ATRs. Wider stops survive the noise of a long
+    # trend; tighter ones suit short swings. R, and so sizing, follows from it.
+    stop_atr_multiple: float = 1.5
 
     def __post_init__(self) -> None:
         validate_client_id(self.client_id)
+        if self.leaders_count < 0:
+            raise ConfigError("leaders_count must be zero (off) or positive")
+        if self.stop_atr_multiple <= 0:
+            raise ConfigError("stop_atr_multiple must be positive")
         if self.max_risk_level not in RISK_LEVELS:
             raise ConfigError(f"max_risk_level must be one of {sorted(RISK_LEVELS)}")
         if not self.watchlist:

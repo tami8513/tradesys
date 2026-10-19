@@ -12,6 +12,7 @@ from tradesys.clients.profile import (
     RiskProfile,
     WatchlistEntry,
 )
+from tradesys.clients.universes import UNIVERSES
 from tradesys.core.enums import SetupType
 from tradesys.core.errors import ConfigError
 from tradesys.core.identity import validate_client_id
@@ -44,6 +45,24 @@ def _setups(values: Any, path: Path) -> frozenset[SetupType]:
         return frozenset(SetupType(v) for v in values or ())
     except ValueError as exc:
         raise ConfigError(f"{path.name}: unknown setup type ({exc})") from exc
+
+
+def _with_universe(
+    watchlist: tuple[WatchlistEntry, ...], doc: Mapping[str, Any], path: Path
+) -> tuple[WatchlistEntry, ...]:
+    """Append a named universe to the explicit watchlist; explicit entries win."""
+    name = str(doc["universe"])
+    if name not in UNIVERSES:
+        raise ConfigError(f"{path.name}: unknown universe {name!r} (expected one of {sorted(UNIVERSES)})")
+    setups = _setups(doc.get("universe_setups"), path)
+    if not setups:
+        raise ConfigError(f"{path.name}: a universe needs universe_setups")
+    listed = {entry.symbol for entry in watchlist}
+    return watchlist + tuple(
+        WatchlistEntry(symbol=symbol, setups=setups)
+        for symbol in UNIVERSES[name]
+        if symbol not in listed
+    )
 
 
 def _capital_floor(raw_risk: Mapping[str, Any], path: Path) -> float | None:
@@ -116,8 +135,10 @@ def parse_profile(doc: Mapping[str, Any], path: Path) -> ClientProfile:
                 else None
             ),
         )
-        for item in _require(doc, "watchlist", path)
+        for item in doc.get("watchlist") or ()
     )
+    if doc.get("universe"):
+        watchlist = _with_universe(watchlist, doc, path)
 
     raw_broker = doc.get("broker", {})
     broker = BrokerConfig(
@@ -144,6 +165,8 @@ def parse_profile(doc: Mapping[str, Any], path: Path) -> ClientProfile:
         tags=tuple(str(t) for t in doc.get("tags", ())),
         metadata={str(k): str(v) for k, v in (doc.get("metadata") or {}).items()},
         max_risk_level=int(doc.get("max_risk_level", PROTECTED_RISK_LEVEL)),
+        leaders_count=int(doc.get("leaders_count", 0)),
+        stop_atr_multiple=float(doc.get("stop_atr_multiple", 1.5)),
     )
 
 

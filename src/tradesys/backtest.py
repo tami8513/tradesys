@@ -121,11 +121,41 @@ class BacktestResult:
 
 
 def fetch_bars(
-    source: MarketDataProvider, symbols: Sequence[str], years: int
+    source: MarketDataProvider,
+    symbols: Sequence[str],
+    years: int,
+    cache_dir: Path | None = None,
 ) -> dict[str, list[Bar]]:
+    """Daily bars for every symbol plus the benchmark, cached per symbol per day.
+
+    A universe of a hundred names is a hundred requests; the cache makes a second
+    run the same day free, and it is keyed by date so it never serves stale bars.
+    """
     limit = years * 252 + WARMUP_BARS
     wanted = sorted({s.upper() for s in symbols} | {BENCHMARK})
-    return {s: source.history(s, timeframe="1Day", limit=limit) for s in wanted}
+    today = date.today().isoformat()
+    bars: dict[str, list[Bar]] = {}
+    for symbol in wanted:
+        cached = cache_dir / f"{symbol}_{today}_{limit}.json" if cache_dir else None
+        if cached is not None and cached.exists():
+            raw = json.loads(cached.read_text(encoding="utf-8"))
+            bars[symbol] = [
+                Bar(datetime.fromisoformat(b["ts"]), b["o"], b["h"], b["l"], b["c"], b["v"])
+                for b in raw
+            ]
+            continue
+        bars[symbol] = source.history(symbol, timeframe="1Day", limit=limit)
+        if cached is not None:
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            cached.write_text(
+                json.dumps([
+                    {"ts": b.ts.isoformat(), "o": b.open, "h": b.high, "l": b.low,
+                     "c": b.close, "v": b.volume}
+                    for b in bars[symbol]
+                ]),
+                encoding="utf-8",
+            )
+    return bars
 
 
 def _set_prices(market: ReplayMarketData, trades: Sequence[TradeRecord], pick) -> None:
@@ -275,7 +305,7 @@ def backtest_client(client_id: str, years: int, settings: Settings) -> BacktestR
         raise RuntimeError("a historical test needs the Alpaca market-data keys")
     profile = TradingSystem(settings).registry.load(client_id)
     source = AlpacaMarketData(settings.market_data_key_id, settings.market_data_secret_key)
-    bars = fetch_bars(source, profile.symbols, years)
+    bars = fetch_bars(source, profile.symbols, years, settings.data_dir / "_platform" / "bars_cache")
     with tempfile.TemporaryDirectory() as scratch:
         return run_backtest(profile, bars, years, Path(scratch))
 

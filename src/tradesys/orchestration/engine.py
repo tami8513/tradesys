@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from tradesys.agents.execution import ExecutionAgent, ExecutionOutcome
+from tradesys.agents.hunter import LeaderHunter
 from tradesys.agents.monitor import MonitorReport, PositionMonitor
 from tradesys.agents.offense import OffenseAgent
 from tradesys.agents.reflection import ReflectionAgent
@@ -223,6 +224,7 @@ class TradingSystem:
                 tenant, profile, journal, self.clock, earnings=self._earnings()
             ),
             offense=OffenseAgent(tenant, profile, journal, self.clock),
+            hunter=LeaderHunter(tenant, profile, market_data, self.clock),
             execution=execution,
             reflection=reflection,
             monitor=PositionMonitor(
@@ -253,6 +255,7 @@ class ClientSession:
     scout: ScoutAgent
     risk: RiskManager
     offense: OffenseAgent
+    hunter: LeaderHunter
     execution: ExecutionAgent
     reflection: ReflectionAgent
     monitor: PositionMonitor
@@ -305,7 +308,19 @@ class ClientSession:
         regime = self.market_regime()
         report.regime = regime
 
-        candidates = self.scout.scan()
+        focus = None
+        if self.profile.leaders_count:
+            leaders = self.hunter.leaders()
+            focus = {leader.symbol for leader in leaders}
+            events.append(
+                (
+                    "hunter",
+                    "leaders",
+                    "",
+                    " ".join(f"{leader.symbol}:{leader.score:.1f}" for leader in leaders),
+                )
+            )
+        candidates = self.scout.scan(focus)
         report.candidates = len(candidates)
 
         offense_on = self.profile.risk.conviction_sizing

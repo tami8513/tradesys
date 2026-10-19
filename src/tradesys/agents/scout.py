@@ -14,7 +14,6 @@ from tradesys.data.market_data import MarketDataProvider
 from tradesys.memory.directives import apply_directives
 from tradesys.memory.store import VectorMemory
 
-_STOP_ATR_MULTIPLE = 1.5
 _TARGET_R_MULTIPLE = 2.5
 
 
@@ -48,9 +47,12 @@ class ScoutAgent(Agent):
         self._memory = memory
         self._directives = tuple(directives)
 
-    def scan(self) -> list[Candidate]:
+    def scan(self, focus: set[str] | None = None) -> list[Candidate]:
+        """Ideas from the watchlist, or only from `focus` when the hunter set one."""
         raw: list[Candidate] = []
         for entry in self.profile.watchlist:
+            if focus is not None and entry.symbol not in focus:
+                continue
             bars = self._market_data.history(
                 entry.symbol,
                 timeframe=self.profile.timeframe,
@@ -175,7 +177,7 @@ class ScoutAgent(Agent):
         confidence: float,
         rationale: str,
     ) -> Candidate:
-        stop = price - _STOP_ATR_MULTIPLE * atr
+        stop = price - self.profile.stop_atr_multiple * atr
         target = price + _TARGET_R_MULTIPLE * (price - stop)
         return Candidate(
             client_id=self.client_id,
