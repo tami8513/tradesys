@@ -1660,6 +1660,12 @@ def risk_gauge(value: float, maximum: float, title: str, bands: list[tuple[float
     return fig
 
 
+def locked_hint(armed: bool) -> None:
+    """Say why a button is greyed out: a disabled control explains nothing on its own."""
+    if not armed:
+        st.caption("🔒 כדי לשמור, הפעל את \"אפשר פעולות\" בתפריט הצדדי (» בראש המסך).")
+
+
 def control_panel(client_id: str, snapshot: dict, session, armed: bool) -> str:
     """How the client runs the robot: autopilot or own settings, and how much money."""
     from tradesys.brokers.paper import PaperBroker
@@ -1713,6 +1719,7 @@ def control_panel(client_id: str, snapshot: dict, session, armed: bool) -> str:
         or control.mode != mode
         or (control.allocation or None) != (allocation or None)
     )
+    locked_hint(armed)
     if st.button("שמור את ההגדרות", type="primary", disabled=not armed or not changed,
                  use_container_width=True, key=f"control_save_{client_id}"):
         write_control(session.tenant.data_dir, mode, allocation, equity)
@@ -1875,6 +1882,9 @@ def risk_meter(client_id: str, snapshot: dict, session, armed: bool) -> None:
         )
 
     unchanged = active is not None and selected == active.level
+    locked_hint(armed)
+    if unchanged:
+        st.caption("זו הרמה שכבר פעילה.")
     if st.button(
         "החל רמת סיכון",
         type="primary",
