@@ -1726,6 +1726,8 @@ def control_panel(client_id: str, snapshot: dict, session, armed: bool) -> str:
         invalidate()
         st.rerun()
 
+    my_stocks(client_id, session, armed)
+
     if isinstance(session.broker, PaperBroker):
         with st.expander("הוספת כסף לחשבון"):
             amount = st.number_input(
@@ -1743,6 +1745,52 @@ def control_panel(client_id: str, snapshot: dict, session, armed: bool) -> str:
         st.caption("בחשבון אמיתי מפקידים כסף אצל הברוקר, והרובוט רואה אותו בסבב הבא.")
     st.divider()
     return control.mode if control else "custom"
+
+
+def my_stocks(client_id: str, session, armed: bool) -> None:
+    """Stocks the client wants the robot to watch, on top of the leaders it picks."""
+    from tradesys.clients.picks import MAX_PICKS, normalize, read_picks, write_picks
+    from tradesys.core.errors import ConfigError
+
+    st.markdown("###### המניות שלי")
+    picks = read_picks(session.tenant.data_dir)
+    hunting = session.profile.leaders_count > 0
+    st.caption(
+        ("הרובוט בוחר בעצמו את המובילות של השוק, ובנוסף בודק בכל סבב את המניות שתוסיף כאן. "
+         if hunting else "בנוסף לרשימת המעקב, הרובוט יבדוק בכל סבב את המניות שתוסיף כאן. ")
+        + "הוא קונה רק כשיש נקודת כניסה טובה ושומר הסיכון מאשר."
+    )
+
+    add_col, button_col = st.columns([3, 1])
+    typed = add_col.text_input(
+        "סימול מניה", placeholder="NVDA", key=f"pick_input_{client_id}",
+        label_visibility="collapsed",
+    )
+    if button_col.button("הוסף", disabled=not armed or len(picks) >= MAX_PICKS,
+                         use_container_width=True, key=f"pick_add_{client_id}"):
+        try:
+            ticker = normalize(typed)
+            bars = session.market_data.history(ticker, timeframe="1Day", limit=60)
+            if len(bars) < 60:
+                raise ConfigError(f"לא נמצאו מספיק נתוני מסחר עבור {ticker}")
+            write_picks(session.tenant.data_dir, [*picks, ticker])
+            invalidate()
+            st.rerun()
+        except ConfigError as exc:
+            st.error(str(exc))
+        except Exception:  # a market-data failure must not break the settings tab
+            st.error("לא הצלחנו לבדוק את המניה כרגע. נסה שוב בעוד דקה.")
+    locked_hint(armed)
+
+    for ticker in picks:
+        name_col, remove_col = st.columns([3, 1])
+        name_col.markdown(f'<span class="ts-chip"><b>{esc(ticker)}</b></span>',
+                          unsafe_allow_html=True)
+        if remove_col.button("הסר", disabled=not armed, key=f"pick_rm_{client_id}_{ticker}",
+                             use_container_width=True):
+            write_picks(session.tenant.data_dir, [t for t in picks if t != ticker])
+            invalidate()
+            st.rerun()
 
 
 def autopilot_status(session) -> None:

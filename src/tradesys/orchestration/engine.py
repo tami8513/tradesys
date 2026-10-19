@@ -15,6 +15,7 @@ from tradesys.brokers.paper import PaperBroker
 from tradesys.clients.loader import ClientRegistry
 from tradesys.clients.profile import ClientProfile
 from tradesys.clients.secrets import EnvSecretResolver, SecretResolver
+from tradesys.clients.picks import apply_picks, read_picks
 from tradesys.clients.tracks import apply_control, read_control, read_track
 from tradesys.core.clock import Clock, SystemClock, trading_day
 from tradesys.core.config import Settings
@@ -193,6 +194,7 @@ class TradingSystem:
             read_control(tenant.data_dir),
             read_track(tenant.data_dir),
         )
+        profile = apply_picks(profile, read_picks(tenant.data_dir))
         journal = Journal(tenant)
         memory = self._memory(tenant)
         market_data = self._market_data(profile)
@@ -315,7 +317,7 @@ class ClientSession:
         focus = None
         if self.profile.leaders_count:
             leaders = self.hunter.leaders()
-            focus = {leader.symbol for leader in leaders}
+            focus = {leader.symbol for leader in leaders} | set(self.profile.pinned_symbols)
             events.append(
                 (
                     "hunter",

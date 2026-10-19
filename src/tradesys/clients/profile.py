@@ -224,6 +224,9 @@ class ClientProfile:
     # Stop distance below entry in ATRs. Wider stops survive the noise of a long
     # trend; tighter ones suit short swings. R, and so sizing, follows from it.
     stop_atr_multiple: float = 1.5
+    # Stocks the client picked; the Scout looks at them every cycle, on top of
+    # whatever the LeaderHunter chose. Set from the tenant dir, never from YAML.
+    pinned_symbols: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         validate_client_id(self.client_id)
