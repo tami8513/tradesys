@@ -78,7 +78,7 @@ st.set_page_config(
     page_title="tradesys · פורטל מסחר",
     page_icon="◧",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",  # open on desktop, closed on a phone
 )
 
 CSS = f"""
@@ -97,6 +97,11 @@ CSS = f"""
       border-left: 1px solid {PALETTE["border"]};
       border-right: none;
       direction: rtl;
+  }}
+  /* A collapsed sidebar is a zero-width box; under RTL its content spilled out
+     of it as a squeezed strip over the page on phones. */
+  section[data-testid="stSidebar"][aria-expanded="false"] {{
+      overflow: hidden; visibility: hidden;
   }}
 
   /* מספרים, מטבע וקוד נשארים LTR כדי שלא יישברו בפריסה הפוכה */
@@ -169,6 +174,33 @@ CSS = f"""
   .ts-pill {{ display: inline-block; padding: 3px 12px; border-radius: 999px;
       font-size: 11px; font-weight: 700; }}
   .stTabs [data-baseweb="tab-list"] {{ direction: rtl; gap: 6px; }}
+
+  .st-key-home_cols div[data-testid="stHorizontalBlock"] {{ direction: rtl; flex-direction: row; }}
+  .ts-chips {{ display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 16px; }}
+  .ts-chip {{ background: {PALETTE["panel"]}; border: 1px solid {PALETTE["border"]};
+      border-radius: 999px; padding: 4px 12px; font-size: 12px; direction: ltr; }}
+  .ts-vault {{ background: {PALETTE["panel"]}; border: 1px solid {PALETTE["border"]};
+      border-radius: 18px; padding: 20px 22px; }}
+  .ts-vault-label {{ font-size: 12px; color: {PALETTE["muted"]}; font-weight: 600;
+      margin-bottom: 6px; }}
+  .ts-vault-value {{ font-size: 34px; font-weight: 800; direction: ltr; text-align: right;
+      font-variant-numeric: tabular-nums; line-height: 1.15; }}
+  .ts-vault-bar {{ display: flex; height: 38px; border-radius: 10px; overflow: hidden;
+      border: 1px solid {PALETTE["border"]}; direction: rtl; }}
+  .ts-vault-legend {{ display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px;
+      margin-top: 8px; }}
+  .ts-bench {{ font-size: 13px; color: {PALETTE["muted"]}; margin-top: 10px; }}
+  .ts-section {{ font-size: 13px; color: {PALETTE["muted"]}; font-weight: 700;
+      margin-bottom: 8px; }}
+  .ts-room {{ background: {PALETTE["panel"]}; border: 1px solid {PALETTE["border"]};
+      border-radius: 18px; padding: 8px 16px; }}
+  .ts-agent {{ display: flex; gap: 10px; padding: 9px 0; font-size: 13px;
+      border-bottom: 1px solid {PALETTE["border"]}; }}
+  .ts-agent:last-child {{ border-bottom: none; }}
+  .ts-agent-dot {{ width: 9px; height: 9px; border-radius: 50%; margin-top: 6px;
+      flex: none; }}
+  .ts-agent-when {{ color: {PALETTE["muted"]}; font-size: 11px; }}
+  .ts-agent-text {{ color: {PALETTE["muted"]}; font-size: 12px; line-height: 1.5; }}
 
   .ts-demo-bar {{
       background: linear-gradient(90deg, rgba(212,175,106,.16), rgba(212,175,106,.05));
@@ -615,6 +647,10 @@ def load_snapshot(client_id: str, bust: int) -> dict:
         "drawdown_pct": drawdown_pct,
         "cumulative_realized": sum(t.realized_pnl or 0.0 for t in closed),
         "floor": _floor_dict(session.risk.floor_state(account, stats)),
+        "capital_base": journal.capital_base(),
+        "started_on": journal.started_on(),
+        "peak_equity": stats.peak_equity,
+        "open_risk": journal.open_risk(),
         "halted": halted,
         "halt_reason": halt_reason,
         "position_count": len(positions),
@@ -774,6 +810,187 @@ def price_chart(frame: pd.DataFrame, symbol: str, overlays: list[dict]) -> go.Fi
 
 
 # ---------------------------------------------------------- לשוניות הלקוח
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_market_status() -> tuple[bool, str]:
+    from tradesys.data.market_clock import market_clock
+
+    settings = Settings.from_env(ROOT)
+    status = market_clock(settings.market_data_key_id, settings.market_data_secret_key).status()
+    return status.is_open, status.next_open.isoformat() if status.next_open else ""
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_benchmark(client_id: str, started_on: str, bust: int) -> float | None:
+    """S&P 500 (SPY) return since the account started, in percent."""
+    del bust
+    from datetime import date
+
+    session = get_session(client_id)
+    start = date.fromisoformat(started_on)
+    days = (date.today() - start).days
+    if days < 1:
+        return None
+    try:
+        bars = session.market_data.history("SPY", timeframe="1Day", limit=days + 10)
+    except Exception:  # a missing benchmark must not take the home screen down
+        return None
+    before = [b for b in bars if b.ts.date() <= start]
+    if not before:
+        return None
+    return (bars[-1].close / before[-1].close - 1) * 100
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_quotes(client_id: str, bust: int) -> list[tuple[str, float, float]]:
+    """(symbol, last close, change % vs the previous close) for the watchlist."""
+    del bust
+    session = get_session(client_id)
+    quotes = []
+    for symbol in session.profile.symbols:
+        try:
+            bars = session.market_data.history(symbol, timeframe="1Day", limit=2)
+        except Exception:  # one symbol's outage must not blank the strip
+            continue
+        if len(bars) == 2 and bars[0].close:
+            quotes.append((symbol, bars[1].close, (bars[1].close / bars[0].close - 1) * 100))
+    return quotes
+
+
+AGENT_ROOM = (
+    ("scout", "סוכן כניסה"),
+    ("offense", "סוכן התקפה"),
+    ("risk", "שומר הסיכון"),
+    ("execution", "סוכן ביצוע"),
+    ("monitor", "סוכן יציאה"),
+    ("reflection", "סוכן למידה"),
+)
+
+
+def vault_html(snapshot: dict) -> str:
+    """The capital vault: what is locked behind the protection line, what is at risk."""
+    equity = snapshot["equity"]
+    base = snapshot["capital_base"] or equity
+    halt_line = (snapshot["peak_equity"] or equity) * (1 - snapshot["max_drawdown_pct"] / 100)
+    floor = snapshot["floor"]["floor"] if snapshot["floor"] else 0.0
+    protected = min(max(halt_line, floor), equity)
+    at_risk = min(snapshot["open_risk"], equity - protected)
+    free = max(equity - protected - at_risk, 0.0)
+    total = protected + at_risk + free or 1.0
+    change = (equity / base - 1) * 100 if base else 0.0
+
+    def segment(value: float, colour: str, label: str) -> str:
+        width = value / total * 100
+        text = esc(label) if width > 22 else ""
+        return (
+            f'<div style="width:{width:.2f}%;background:{colour};display:flex;'
+            f"align-items:center;justify-content:center;font-size:12px;color:#06121c;"
+            f'font-weight:700;white-space:nowrap;overflow:hidden">{text}</div>'
+        )
+
+    tone = PALETTE["positive"] if change >= 0 else PALETTE["negative"]
+    return (
+        '<div class="ts-vault">'
+        '<div class="ts-vault-label">שווי התיק</div>'
+        f'<div class="ts-vault-value">{money(equity)}</div>'
+        f'<div style="color:{tone};font-size:13px;font-weight:600;margin-bottom:14px">'
+        f"{ltr(f'{change:+.2f}%')} מתחילת הדרך</div>"
+        '<div class="ts-vault-label">הכספת שלך</div>'
+        '<div class="ts-vault-bar">'
+        f'{segment(protected, PALETTE["accent"], "מוגן " + money(protected))}'
+        f'{segment(at_risk, PALETTE["warning"], "בסיכון")}'
+        f'{segment(free, PALETTE["positive"], "כרית")}'
+        "</div>"
+        '<div class="ts-vault-legend">'
+        f'<span style="color:{PALETTE["accent"]}">■ מוגן {money(protected)}</span>'
+        f'<span style="color:{PALETTE["warning"]}">■ בסיכון עכשיו {money(at_risk)}</span>'
+        f'<span style="color:{PALETTE["positive"]}">■ כרית {money(free)}</span>'
+        "</div></div>"
+    )
+
+
+def agents_room_html(latest: dict) -> str:
+    """Each agent's latest sentence from the "why" journal, as a live team board."""
+    tones = {
+        "positive": PALETTE["positive"],
+        "negative": PALETTE["warning"],
+        "neutral": PALETTE["accent"],
+    }
+    rows = []
+    for key, name in AGENT_ROOM:
+        entry = latest.get(key)
+        colour = tones[entry.tone] if entry else PALETTE["muted"]
+        text = entry.text if entry else "ממתין לסבב הבא"
+        when = f" · {entry.when[-5:]}" if entry else ""
+        rows.append(
+            '<div class="ts-agent">'
+            f'<span class="ts-agent-dot" style="background:{colour}"></span>'
+            f'<div><b>{esc(name)}</b><span class="ts-agent-when">{esc(when)}</span>'
+            f'<div class="ts-agent-text">{esc(text)}</div></div></div>'
+        )
+    return f'<div class="ts-room">{"".join(rows)}</div>'
+
+
+def tab_home(client_id: str, snapshot: dict, session) -> None:
+    from datetime import timedelta
+
+    from tradesys.orchestration.why import latest_by_agent
+
+    is_open, next_open = load_market_status()
+    bust = st.session_state.get("_bust", 0)
+    if is_open:
+        colour, label = PALETTE["positive"], "הבורסה פתוחה · סבב כל 15 דקות"
+    else:
+        colour = PALETTE["muted"]
+        label = f"הבורסה סגורה · נפתחת ב-{next_open[11:16]} שעון ניו יורק"
+    st.markdown(
+        f'<span class="ts-pill" style="color:{colour};border:1px solid {colour}">'
+        f"{esc(label)}</span>",
+        unsafe_allow_html=True,
+    )
+
+    quotes = load_quotes(client_id, bust)
+    if quotes:
+        chips = "".join(
+            f'<span class="ts-chip"><b>{esc(sym)}</b> {last:,.2f} '
+            f'<span style="color:{PALETTE["positive"] if chg >= 0 else PALETTE["negative"]}">'
+            f"{chg:+.2f}%</span></span>"
+            for sym, last, chg in quotes
+        )
+        st.markdown(f'<div class="ts-chips">{chips}</div>', unsafe_allow_html=True)
+
+    # Keyed so the CSS can order these columns right-to-left on wide screens;
+    # on a phone they stack with the vault first.
+    vault_col, side_col = st.container(key="home_cols").columns([3, 2])
+    with vault_col:
+        st.markdown(vault_html(snapshot), unsafe_allow_html=True)
+        started = snapshot["started_on"]
+        bench = load_benchmark(client_id, started.isoformat(), bust) if started else None
+        base = snapshot["capital_base"] or snapshot["equity"]
+        mine = (snapshot["equity"] / base - 1) * 100 if base else 0.0
+        if bench is not None:
+            ahead = mine - bench
+            tone = PALETTE["positive"] if ahead >= 0 else PALETTE["negative"]
+            verdict = "לפני" if ahead >= 0 else "מאחורי"
+            st.markdown(
+                '<div class="ts-bench">מול המדד (S&amp;P 500) מאז '
+                f'{ltr(started.strftime("%d/%m/%Y"))}: אתה {ltr(f"{mine:+.2f}%")} · '
+                f'המדד {ltr(f"{bench:+.2f}%")} · '
+                f'<span style="color:{tone}">{verdict} המדד ב-'
+                f'{ltr(f"{abs(ahead):.2f}%")}</span></div>',
+                unsafe_allow_html=True,
+            )
+    with side_col:
+        st.markdown('<div class="ts-section">חדר הסוכנים</div>', unsafe_allow_html=True)
+        since = datetime.now(timezone.utc) - timedelta(days=7)
+        st.markdown(
+            agents_room_html(latest_by_agent(session.journal.agent_events(since))),
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("")
+    tab_overview(snapshot)
+
 
 def tab_overview(snapshot: dict) -> None:
     columns = st.columns(5)
@@ -1727,7 +1944,7 @@ def client_portal(client_id: str, demo: bool = False) -> None:
 
     tabs = st.tabs(
         [
-            "סקירה כללית",
+            "הבית",
             "מד סיכון",
             "גרפים",
             "פעילות הסוכנים",
@@ -1741,7 +1958,7 @@ def client_portal(client_id: str, demo: bool = False) -> None:
         on_change="rerun",
     )
     with tabs[0]:
-        tab_overview(snapshot)
+        tab_home(client_id, snapshot, session)
     with tabs[1]:
         tab_protection(client_id, snapshot, session, armed)
     with tabs[2]:

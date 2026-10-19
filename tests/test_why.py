@@ -69,3 +69,16 @@ def test_rejection_lists_every_reason():
 def test_timeline_can_follow_one_stock():
     events = [ev("risk", "approved", symbol="RIVN"), ev("risk", "approved", symbol="KULR")]
     assert [e.symbol for e in timeline(events, symbol="KULR")] == ["KULR"]
+
+
+def test_latest_by_agent_keeps_only_each_agents_newest_line():
+    from tradesys.orchestration.why import latest_by_agent
+
+    events = [
+        ev("risk", "approved", symbol="RIVN", at="2026-10-19T14:00:00"),
+        ev("risk", "rejected", symbol="KULR", detail="3 trades today at limit 3", at="2026-10-19T15:00:00"),
+        ev("scout", "candidate", symbol="KULR", detail="breakout|", at="2026-10-19T15:00:00"),
+    ]
+    latest = latest_by_agent(events)
+    assert latest["risk"].symbol == "KULR" and latest["risk"].tone == "negative"
+    assert set(latest) == {"risk", "scout"}

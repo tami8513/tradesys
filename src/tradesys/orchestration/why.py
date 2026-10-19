@@ -165,3 +165,15 @@ def timeline(events: Sequence[dict[str, Any]], symbol: str | None = None) -> lis
     if symbol:
         entries = [e for e in entries if e.symbol == symbol]
     return list(reversed(entries))
+
+
+def latest_by_agent(events: Sequence[dict[str, Any]]) -> dict[str, WhyEntry]:
+    """Each agent's most recent explained decision, for the home screen's team board."""
+    latest: dict[str, WhyEntry] = {}
+    for event in reversed(events):
+        if event["agent"] in latest:
+            continue
+        entry = _entry(event)
+        if entry is not None:
+            latest[event["agent"]] = entry
+    return latest

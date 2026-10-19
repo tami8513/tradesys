@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS risk_state (
     peak_equity    REAL NOT NULL DEFAULT 0,
     day_start_equity REAL NOT NULL DEFAULT 0,
     capital_base   REAL NOT NULL DEFAULT 0,
+    started_on     TEXT NOT NULL DEFAULT '',
     realized_pnl   REAL NOT NULL DEFAULT 0,
     trades_opened  INTEGER NOT NULL DEFAULT 0,
     halted         INTEGER NOT NULL DEFAULT 0,
@@ -135,6 +136,16 @@ class Journal:
         if "capital_base" not in risk_columns:
             self._execute(
                 "ALTER TABLE risk_state ADD COLUMN capital_base REAL NOT NULL DEFAULT 0"
+            )
+        if "started_on" not in risk_columns:
+            self._execute(
+                "ALTER TABLE risk_state ADD COLUMN started_on TEXT NOT NULL DEFAULT ''"
+            )
+            # A journal that already traded started on its first trade, not today.
+            self._execute(
+                "UPDATE risk_state SET started_on = COALESCE("
+                "(SELECT substr(MIN(opened_at), 1, 10) FROM trades"
+                " WHERE trades.client_id = risk_state.client_id), '')"
             )
 
     def _execute(self, sql: str, params: Sequence[Any] = ()) -> sqlite3.Cursor:
@@ -447,6 +458,11 @@ class Journal:
             "UPDATE risk_state SET capital_base=? WHERE client_id=? AND capital_base=0",
             (equity, self.client_id),
         )
+        # Same for the day trading began: the benchmark comparison starts here.
+        self._execute(
+            "UPDATE risk_state SET started_on=? WHERE client_id=? AND started_on=''",
+            (today.isoformat(), self.client_id),
+        )
         return self.day_stats(today)
 
     def day_stats(self, today: date) -> DayStats:
@@ -465,6 +481,13 @@ class Journal:
             "SELECT capital_base FROM risk_state WHERE client_id=?", (self.client_id,)
         ).fetchone()
         return float(row["capital_base"]) if row else 0.0
+
+    def started_on(self) -> date | None:
+        """The first trading day this tenant was seen; None before the first session."""
+        row = self._execute(
+            "SELECT started_on FROM risk_state WHERE client_id=?", (self.client_id,)
+        ).fetchone()
+        return date.fromisoformat(row["started_on"]) if row and row["started_on"] else None
 
     def open_risk(self) -> float:
         """What the book loses if every open position hits its stop at once."""
