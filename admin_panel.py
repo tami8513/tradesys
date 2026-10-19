@@ -384,6 +384,97 @@ def render_agents(client_ids: tuple[str, ...], bust: int) -> None:
         )
 
 
+def render_backtest(client_ids: tuple[str, ...]) -> None:
+    from app import ROOT
+    from tradesys.backtest import backtest_client, load_result, save_result
+    from tradesys.core.config import Settings
+
+    st.markdown("##### בדיקה היסטורית")
+    st.caption(
+        "מריצה את אותם הסוכנים בדיוק על מחירי עבר אמיתיים, יום אחרי יום. בכל יום הסוכנים "
+        "רואים רק את מה שהיה ידוע עד אותו יום. כסף מדומה בלבד, ושום דבר לא נשלח לברוקר."
+    )
+    settings = Settings.from_env(ROOT)
+    client_col, years_col, run_col = st.columns([2, 1, 1])
+    client_id = client_col.selectbox("לקוח", client_ids, key="bt_client")
+    years = years_col.selectbox("שנים אחורה", [1, 2, 3], index=2, key="bt_years")
+    run_col.markdown("")
+    if run_col.button("הרץ בדיקה", use_container_width=True, type="primary"):
+        try:
+            with st.spinner("מריץ את הסוכנים על השנים האחרונות…"):
+                save_result(backtest_client(client_id, years, settings), settings.data_dir)
+        except (TradesysError, RuntimeError, ValueError) as exc:
+            st.error(f"הבדיקה נכשלה: {exc}")
+
+    result = load_result(settings.data_dir, client_id)
+    if result is None:
+        st.info("עוד לא הורצה בדיקה ללקוח הזה.")
+        return
+
+    ahead = result["total_return_pct"] - result["benchmark_return_pct"]
+    st.caption(f"תקופה: {result['start']} עד {result['end']} · הורץ {result['ran_at'][:16]}")
+    kpis = st.columns(4)
+    kpis[0].metric("תשואה", f"{result['total_return_pct']:+.2f}%",
+                   delta=f"{ahead:+.2f}% מול המדד")
+    kpis[1].metric("S&P 500 באותה תקופה", f"{result['benchmark_return_pct']:+.2f}%")
+    kpis[2].metric("ירידה מקסימלית", f"{result['max_drawdown_pct']:.2f}%")
+    kpis[3].metric("עצירות מסחר", len(result["halts"]))
+    more = st.columns(4)
+    more[0].metric("עסקאות", result["trades"])
+    more[1].metric("אחוז הצלחה", f"{result['win_rate'] * 100:.0f}%")
+    more[2].metric("תוחלת לעסקה", f"{result['avg_r']:+.2f}R")
+    pf = result["profit_factor"]
+    more[3].metric("יחס רווח/הפסד", "∞" if pf is None else f"{pf:.2f}")
+
+    curve = pd.DataFrame(result["equity_curve"], columns=["day", "equity"])
+    bench = pd.DataFrame(result["benchmark_curve"], columns=["day", "equity"])
+    figure = go.Figure()
+    figure.add_trace(go.Scatter(x=bench["day"], y=bench["equity"], name="S&P 500",
+                                line=dict(color=PALETTE["muted"], width=1.5)))
+    figure.add_trace(go.Scatter(x=curve["day"], y=curve["equity"], name="הסוכנים",
+                                line=dict(color=PALETTE["accent"], width=2.2)))
+    figure.update_layout(
+        height=360, margin=dict(l=10, r=10, t=30, b=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color=PALETTE["muted"]), hovermode="x unified",
+        legend=dict(orientation="h", y=1.1, x=0),
+        xaxis=dict(gridcolor=PALETTE["border"]), yaxis=dict(gridcolor=PALETTE["border"]),
+    )
+    st.plotly_chart(figure, use_container_width=True)
+
+    def table(rows: list[dict], label: str) -> None:
+        frame = pd.DataFrame(rows)
+        if frame.empty:
+            return
+        frame = frame.rename(columns={"name": label, "trades": "עסקאות", "win_rate": "הצלחה",
+                                      "avg_r": "תוחלת R", "pnl": "רווח/הפסד"})
+        st.dataframe(
+            # A left-to-right mark keeps the minus sign: under RTL the grid dropped it.
+            frame.style.format({
+                "הצלחה": "{:.0%}",
+                "תוחלת R": lambda v: f"\u200e{v:+.2f}",
+                "רווח/הפסד": lambda v: f"\u200e{v:+,.0f}",
+            })
+            .map(lambda v: f"color: {PALETTE['positive'] if v >= 0 else PALETTE['negative']}",
+                 subset=["תוחלת R", "רווח/הפסד"]),
+            use_container_width=True, hide_index=True,
+        )
+
+    left, right = st.columns(2)
+    with left:
+        st.markdown("###### לפי תבנית כניסה")
+        table(result["by_setup"], "תבנית")
+    with right:
+        st.markdown("###### לפי נייר")
+        table(result["by_symbol"], "נייר")
+
+    with st.expander("הנחות הבדיקה ועצירות"):
+        for line in result["assumptions"]:
+            st.markdown(f"- {esc(line)}")
+        for halt in result["halts"]:
+            st.caption(halt)
+
+
 def render_why_journal(client_ids: tuple[str, ...], armed: bool) -> None:
     from datetime import timedelta
 
@@ -1151,6 +1242,7 @@ def render_admin() -> None:
         [
             "סקירת צי",
             "דוח סוכנים",
+            "בדיקה היסטורית",
             "יומן למה והוראות",
             "פניות הרשמה",
             "ניהול גישה",
@@ -1167,16 +1259,18 @@ def render_admin() -> None:
     with tabs[1]:
         render_agents(client_ids, bust)
     with tabs[2]:
-        render_why_journal(client_ids, armed)
+        render_backtest(client_ids)
     with tabs[3]:
-        render_registrations(armed)
+        render_why_journal(client_ids, armed)
     with tabs[4]:
-        render_accounts(fleet, armed)
+        render_registrations(armed)
     with tabs[5]:
-        render_lifecycle(fleet, armed)
+        render_accounts(fleet, armed)
     with tabs[6]:
-        render_shadow(fleet)
+        render_lifecycle(fleet, armed)
     with tabs[7]:
-        render_marketing(fleet, armed)
+        render_shadow(fleet)
     with tabs[8]:
+        render_marketing(fleet, armed)
+    with tabs[9]:
         render_hive(hive)

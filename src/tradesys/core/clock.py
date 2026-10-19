@@ -27,6 +27,9 @@ class FrozenClock:
 
         self._moment = self._moment + timedelta(seconds=seconds)
 
+    def set(self, moment: datetime) -> None:
+        self._moment = moment
+
 
 def trading_day(clock: Clock) -> date:
     return clock.now().date()
