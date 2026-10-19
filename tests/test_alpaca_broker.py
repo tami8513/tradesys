@@ -106,10 +106,21 @@ def test_partial_fill_on_a_cancelled_entry_is_sold_back(tmp_path):
     assert ("DELETE", "/v2/positions/SPY") in fake.calls
 
 
+def bracket(stop_status: str = "held") -> list[dict]:
+    """How Alpaca really lists a filled bracket: legs nested, the stop "held"."""
+    return [{
+        "id": "parent", "type": "market", "side": "buy", "status": "filled",
+        "legs": [
+            {"id": "leg-target", "type": "limit", "side": "sell", "status": "new"},
+            {"id": "leg-stop", "type": "stop", "side": "sell", "status": stop_status},
+        ],
+    }]
+
+
 def test_close_cancels_bracket_legs_before_selling(tmp_path):
     exit_order = {**order_payload("accepted"), "id": "ord-2", "side": "sell"}
     fake = FakeAlpaca({
-        ("GET", "/v2/orders"): [[{"id": "leg-stop"}, {"id": "leg-target"}]],
+        ("GET", "/v2/orders"): [bracket()],
         ("DELETE", "/v2/positions/SPY"): [exit_order],
         ("GET", "/v2/orders/ord-2"): [{**exit_order, "status": "filled", "filled_qty": "3",
                                        "filled_avg_price": "590.10"}],
@@ -118,22 +129,23 @@ def test_close_cancels_bracket_legs_before_selling(tmp_path):
 
     order_of_calls = [c for c in fake.calls if c[0] == "DELETE"]
     assert order_of_calls == [
-        ("DELETE", "/v2/orders/leg-stop"),
         ("DELETE", "/v2/orders/leg-target"),
+        ("DELETE", "/v2/orders/leg-stop"),
         ("DELETE", "/v2/positions/SPY"),
     ]
     assert result is not None and result.filled_avg_price == pytest.approx(590.10)
 
 
-def test_update_stop_moves_only_the_resting_sell_stop(tmp_path):
-    fake = FakeAlpaca({
-        ("GET", "/v2/orders"): [[
-            {"id": "leg-stop", "type": "stop", "side": "sell"},
-            {"id": "leg-target", "type": "limit", "side": "sell"},
-        ]],
-    })
+def test_update_stop_finds_the_held_stop_leg(tmp_path):
+    fake = FakeAlpaca({("GET", "/v2/orders"): [bracket(stop_status="held")]})
     broker(tmp_path, fake).update_stop("SPY", 23.456)
     assert [c for c in fake.calls if c[0] == "PATCH"] == [("PATCH", "/v2/orders/leg-stop")]
+
+
+def test_a_finished_stop_leg_is_not_moved(tmp_path):
+    fake = FakeAlpaca({("GET", "/v2/orders"): [bracket(stop_status="canceled")]})
+    with pytest.raises(BrokerError):
+        broker(tmp_path, fake).update_stop("SPY", 23.0)
 
 
 def test_update_stop_without_a_resting_stop_is_an_error(tmp_path):

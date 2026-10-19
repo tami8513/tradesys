@@ -138,15 +138,32 @@ class AlpacaBroker:
             self._request("DELETE", f"/v2/positions/{order.symbol.upper()}", missing_ok=True)
         return _parse_order(self.client_id, payload)
 
+    def _working_orders(self, symbol: str) -> list[Mapping[str, Any]]:
+        """Every order still working on `symbol`, bracket legs included.
+
+        A bracket's stop leg sits in status "held" until the target leg is gone,
+        and Alpaca's "open" listing leaves held orders out. Reading the parents
+        with their legs nested is the only listing that shows the stop.
+        """
+        parents = self._request(
+            "GET",
+            "/v2/orders",
+            params={"status": "all", "symbols": symbol, "nested": "true", "limit": "100"},
+        ) or []
+        working = []
+        for parent in parents:
+            for order in [parent, *(parent.get("legs") or [])]:
+                if order.get("status") not in _FINAL_STATES:
+                    working.append(order)
+        return working
+
     def close_position(self, symbol: str) -> OrderResult | None:
         symbol = symbol.upper()
         # A bracket's stop and target legs hold the shares; Alpaca refuses to sell
         # held shares, so the legs are cancelled before the position is closed.
-        open_orders = self._request(
-            "GET", "/v2/orders", params={"status": "open", "symbols": symbol}
-        ) or []
-        for order in open_orders:
-            self._request("DELETE", f"/v2/orders/{order['id']}", missing_ok=True)
+        for order in self._working_orders(symbol):
+            if order.get("side") == "sell":
+                self._request("DELETE", f"/v2/orders/{order['id']}", missing_ok=True)
         payload = self._request("DELETE", f"/v2/positions/{symbol}", missing_ok=True)
         if not payload:
             return None
@@ -154,11 +171,8 @@ class AlpacaBroker:
 
     def update_stop(self, symbol: str, stop_price: float) -> None:
         """Move the resting stop leg, so a raised stop also holds between sweeps."""
-        open_orders = self._request(
-            "GET", "/v2/orders", params={"status": "open", "symbols": symbol.upper()}
-        ) or []
         stops = [
-            o for o in open_orders
+            o for o in self._working_orders(symbol.upper())
             if o.get("type") in ("stop", "stop_limit") and o.get("side") == "sell"
         ]
         if not stops:
