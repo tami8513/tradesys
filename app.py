@@ -190,6 +190,14 @@ CSS = f"""
   .ts-vault-legend {{ display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px;
       margin-top: 8px; }}
   .ts-bench {{ font-size: 13px; color: {PALETTE["muted"]}; margin-top: 10px; }}
+  .ts-brief {{ background: {PALETTE["panel"]}; border: 1px solid {PALETTE["border"]};
+      border-right: 3px solid {PALETTE["gold"]}; border-radius: 0; padding: 14px 18px;
+      margin-top: 14px; font-size: 13px; }}
+  .ts-brief-title {{ font-size: 12px; color: {PALETTE["gold"]}; font-weight: 700;
+      margin-bottom: 4px; }}
+  .ts-brief-headline {{ font-size: 16px; font-weight: 700; margin-bottom: 6px; }}
+  .ts-brief ul {{ margin: 0; padding-inline-start: 18px; color: {PALETTE["muted"]};
+      line-height: 1.7; }}
   .ts-section {{ font-size: 13px; color: {PALETTE["muted"]}; font-weight: 700;
       margin-bottom: 8px; }}
   .ts-room {{ background: {PALETTE["panel"]}; border: 1px solid {PALETTE["border"]};
@@ -909,6 +917,40 @@ def vault_html(snapshot: dict) -> str:
     )
 
 
+def trading_day_start() -> datetime:
+    """Midnight New York time today: the start of the trading day, in UTC."""
+    from datetime import time
+    from zoneinfo import ZoneInfo
+
+    new_york = ZoneInfo("America/New_York")
+    today = datetime.now(new_york).date()
+    return datetime.combine(today, time.min, new_york).astimezone(timezone.utc)
+
+
+def brief_html(session, snapshot: dict) -> str:
+    from tradesys.orchestration.brief import daily_brief
+
+    since = trading_day_start()
+    journal = session.journal
+    closed_today = [
+        t for t in journal.closed_trades(limit=200) if t.closed_at and t.closed_at >= since
+    ]
+    brief = daily_brief(
+        journal.agent_events(since),
+        closed_today,
+        journal.open_trades(),
+        snapshot["day_pnl"],
+        snapshot["equity"],
+    )
+    lines = "".join(f"<li>{esc(line)}</li>" for line in brief.lines)
+    return (
+        '<div class="ts-brief"><div class="ts-brief-title">התדריך של היום</div>'
+        f'<div class="ts-brief-headline">{esc(brief.headline)}</div>'
+        + (f"<ul>{lines}</ul>" if lines else "")
+        + "</div>"
+    )
+
+
 def agents_room_html(latest: dict) -> str:
     """Each agent's latest sentence from the "why" journal, as a live team board."""
     tones = {
@@ -980,6 +1022,7 @@ def tab_home(client_id: str, snapshot: dict, session) -> None:
                 f'{ltr(f"{abs(ahead):.2f}%")}</span></div>',
                 unsafe_allow_html=True,
             )
+        st.markdown(brief_html(session, snapshot), unsafe_allow_html=True)
     with side_col:
         st.markdown('<div class="ts-section">חדר הסוכנים</div>', unsafe_allow_html=True)
         since = datetime.now(timezone.utc) - timedelta(days=7)
@@ -989,25 +1032,10 @@ def tab_home(client_id: str, snapshot: dict, session) -> None:
         )
 
     st.markdown("")
-    tab_overview(snapshot)
+    overview_details(snapshot)
 
 
-def tab_overview(snapshot: dict) -> None:
-    columns = st.columns(5)
-    columns[0].metric("שווי תיק", money(snapshot["equity"]))
-    columns[1].metric("רווח/הפסד יומי", signed(snapshot["day_pnl"]))
-    columns[2].metric("רווח לא ממומש", signed(snapshot["unrealized"]))
-    columns[3].metric(
-        "פוזיציות פתוחות",
-        f"{snapshot['position_count']} / {snapshot['max_open_positions']}",
-    )
-    columns[4].metric(
-        "ירידה מהשיא",
-        f"{snapshot['drawdown_pct']:.2f}%",
-        delta=f"מגבלה {snapshot['max_drawdown_pct']}%",
-        delta_color="off",
-    )
-
+def overview_details(snapshot: dict) -> None:
     st.markdown("")
     left, right = st.columns([3, 2])
     with left:
