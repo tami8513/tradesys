@@ -54,3 +54,24 @@ def test_ranking_never_uses_bars_after_today(tmp_path):
                                    for i in range(5)]}
     leaders = hunter(tmp_path, bars, count=1).leaders()
     assert leaders == []      # flat until today; the future spike is invisible
+
+
+def test_the_weekly_list_is_reused_across_sessions(tmp_path):
+    bars = {"FAST": trend(1.004), "MID": trend(1.002)}
+    first = hunter(tmp_path, bars).leaders()
+
+    class Exploding(ReplayMarketData):
+        def history(self, *args, **kwargs):
+            raise AssertionError("a saved weekly list must not be ranked again")
+
+    again = hunter(tmp_path, bars)
+    again._market_data = Exploding(bars)
+    assert again.leaders() == first
+
+
+def test_a_new_week_ranks_again(tmp_path):
+    hunter(tmp_path, {"FAST": trend(1.004), "MID": trend(1.002)}).leaders()
+    # A week later the leadership has flipped; a stale list would still say FAST.
+    later = hunter(tmp_path, {"FAST": trend(1.001), "MID": trend(1.004)})
+    later.clock.advance(7 * 86400)
+    assert [leader.symbol for leader in later.leaders()] == ["MID", "FAST"]
