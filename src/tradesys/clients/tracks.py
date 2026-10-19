@@ -25,6 +25,82 @@ from tradesys.core.errors import ConfigError
 from tradesys.core.fileio import write_json_atomic
 
 TRACK_FILE = "capital_track.json"
+CONTROL_FILE = "control.json"
+AUTO_PILOT_LEVEL = 2      # autopilot's fixed safety limits: the balanced level
+
+
+@dataclass(frozen=True, slots=True)
+class Control:
+    """How the client runs the robot: autopilot or their own settings."""
+
+    mode: str                    # "auto" | "custom"
+    allocation: float | None     # most the robot may invest; None = whole account
+    base: float                  # equity when chosen; autopilot's floor is % of it
+
+
+def read_control(tenant_dir: Path) -> Control | None:
+    path = Path(tenant_dir) / CONTROL_FILE
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        control = Control(
+            mode=str(raw["mode"]),
+            allocation=float(raw["allocation"]) if raw.get("allocation") else None,
+            base=float(raw["base"]),
+        )
+    except (ValueError, OSError, KeyError, TypeError):
+        return None
+    if control.mode not in ("auto", "custom") or control.base <= 0:
+        return None
+    if control.allocation is not None and control.allocation <= 0:
+        return None
+    return control
+
+
+def write_control(
+    tenant_dir: Path, mode: str, allocation: float | None, base_equity: float
+) -> None:
+    if mode not in ("auto", "custom"):
+        raise ConfigError(f"unknown control mode {mode!r}")
+    if allocation is not None and allocation <= 0:
+        raise ConfigError("the robot's allocation must be positive")
+    if base_equity <= 0:
+        raise ConfigError("control needs the current equity as its base")
+    write_json_atomic(
+        Path(tenant_dir) / CONTROL_FILE,
+        {
+            "mode": mode,
+            "allocation": allocation,
+            "base": base_equity,
+            "chosen_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+
+def apply_control(
+    profile: ClientProfile, control: Control | None, choice: "TrackChoice | None"
+) -> ClientProfile:
+    """Autopilot replaces the risk level with its own; custom keeps the client's."""
+    if control is not None and control.mode == "auto":
+        level = RISK_LEVELS[AUTO_PILOT_LEVEL]
+        profile = replace(
+            profile,
+            risk=replace(
+                profile.risk,
+                capital_floor_pct=level.capital_floor_pct,
+                capital_floor_base=control.base,
+                risk_per_trade_pct=level.risk_per_trade_pct,
+                max_daily_loss_pct=level.max_daily_loss_pct,
+                max_drawdown_pct=level.max_drawdown_pct,
+                auto_pilot=True,
+            ),
+        )
+    else:
+        profile = apply_track(profile, choice)
+    if control is not None and control.allocation is not None:
+        profile = replace(profile, risk=replace(profile.risk, allocation_cap=control.allocation))
+    return profile
 
 
 @dataclass(frozen=True, slots=True)

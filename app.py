@@ -1660,7 +1660,114 @@ def risk_gauge(value: float, maximum: float, title: str, bands: list[tuple[float
     return fig
 
 
+def control_panel(client_id: str, snapshot: dict, session, armed: bool) -> str:
+    """How the client runs the robot: autopilot or own settings, and how much money."""
+    from tradesys.brokers.paper import PaperBroker
+    from tradesys.clients.tracks import read_control, write_control
+
+    st.markdown("##### איך הרובוט עובד בשבילך")
+    control = read_control(session.tenant.data_dir)
+    equity = snapshot["equity"]
+    labels = {"auto": "🤖 טייס אוטומטי (מומלץ)", "custom": "🎛 לפי ההגדרות שלי"}
+    mode = st.radio(
+        "מצב",
+        list(labels),
+        index=0 if control and control.mode == "auto" else 1,
+        format_func=labels.get,
+        horizontal=True,
+        key=f"control_mode_{client_id}",
+        label_visibility="collapsed",
+    )
+    if mode == "auto":
+        st.caption(
+            "הרובוט מנהל הכול לבד. הוא מתאים את האגרסיביות לשוק: 0.75% סיכון לעסקה כשהשוק "
+            "בעלייה (מעל ממוצע 200 הימים), ו-0.25% כשהשוק חלש. מגבלות הבטיחות קבועות ברמה "
+            "\"מאוזן\": רצפה ב-90% ועצירה בירידה של 10%."
+        )
+    else:
+        st.caption("אתה בוחר את רמת הסיכון במד שלמטה, והרובוט פועל לפיה.")
+
+    whole = st.checkbox(
+        "הרובוט רשאי להשקיע את כל החשבון",
+        value=not (control and control.allocation),
+        key=f"control_whole_{client_id}",
+    )
+    allocation = None
+    if not whole:
+        allocation = st.number_input(
+            "כמה מהחשבון הרובוט רשאי להשקיע ($)",
+            min_value=1_000.0,
+            max_value=max(float(equity), 1_000.0),
+            value=float(min(control.allocation, equity)) if control and control.allocation
+            else float(round(equity / 2, -3)),
+            step=1_000.0,
+            key=f"control_alloc_{client_id}",
+        )
+        st.caption(
+            f"הרובוט לא יחזיק פוזיציות ביותר מ-{money(allocation)}, וגודל כל עסקה יחושב "
+            "לפי הסכום הזה ולא לפי כל החשבון."
+        )
+
+    changed = (
+        control is None
+        or control.mode != mode
+        or (control.allocation or None) != (allocation or None)
+    )
+    if st.button("שמור את ההגדרות", type="primary", disabled=not armed or not changed,
+                 use_container_width=True, key=f"control_save_{client_id}"):
+        write_control(session.tenant.data_dir, mode, allocation, equity)
+        invalidate()
+        st.rerun()
+
+    if isinstance(session.broker, PaperBroker):
+        with st.expander("הוספת כסף לחשבון"):
+            amount = st.number_input(
+                "סכום להפקדה ($)", min_value=100.0, value=10_000.0, step=1_000.0,
+                key=f"deposit_{client_id}",
+            )
+            st.caption("בחשבון הדמו הכסף מדומה. הפקדה לא נספרת כרווח, ולא משנה את מדידת הירידה.")
+            if st.button("הפקד", disabled=not armed, key=f"deposit_go_{client_id}"):
+                session.broker.deposit(amount)
+                session.journal.record_deposit(amount)
+                st.success(f"הופקדו {money(amount)}.")
+                invalidate()
+                st.rerun()
+    else:
+        st.caption("בחשבון אמיתי מפקידים כסף אצל הברוקר, והרובוט רואה אותו בסבב הבא.")
+    st.divider()
+    return control.mode if control else "custom"
+
+
+def autopilot_status(session) -> None:
+    from tradesys.agents.risk_manager import AUTO_PILOT_RISK_PCT
+
+    regime = session.market_regime()
+    rising = regime is not None and regime.risk_on
+    state = "בעלייה" if rising else "חלש" if regime is not None else "לא ידוע"
+    colour = PALETTE["positive"] if rising else PALETTE["warning"]
+    detail = (
+        f"S&amp;P 500 ב-{regime.price:,.2f} מול ממוצע 200 הימים {regime.average:,.2f}"
+        if regime is not None else "אין כרגע נתוני שוק, ולכן הרובוט נוהג בזהירות"
+    )
+    st.markdown(
+        f'<div class="ts-vault"><div class="ts-vault-label">הטייס האוטומטי פעיל</div>'
+        f'<div style="font-size:18px;font-weight:700">השוק {state} · '
+        f'<span style="color:{colour}">{AUTO_PILOT_RISK_PCT[rising]}% סיכון לעסקה</span></div>'
+        f'<div class="ts-agent-text" style="margin-top:6px">{detail}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
 def tab_protection(client_id: str, snapshot: dict, session, armed: bool) -> None:
+    """שליטה וסיכון: טייס אוטומטי או הגדרות הלקוח, הקצאה, מד סיכון ורצפה."""
+    if control_panel(client_id, snapshot, session, armed) == "auto":
+        autopilot_status(session)
+    else:
+        risk_meter(client_id, snapshot, session, armed)
+    floor_status(snapshot)
+
+
+def risk_meter(client_id: str, snapshot: dict, session, armed: bool) -> None:
     """מד סיכון: בחירת רמת הסיכון, ומצב התיק מול המגבלות שלה."""
     from tradesys.clients.profile import PROTECTED_RISK_LEVEL, RISK_LEVELS
     from tradesys.clients.tracks import effective_level, read_track, write_track
@@ -1794,6 +1901,8 @@ def tab_protection(client_id: str, snapshot: dict, session, armed: bool) -> None
         invalidate()
         st.rerun()
 
+
+def floor_status(snapshot: dict) -> None:
     floor = snapshot["floor"]
     st.markdown("")
     if floor is None:
@@ -2057,7 +2166,7 @@ def client_portal(client_id: str, demo: bool = False) -> None:
     tabs = st.tabs(
         [
             "הבית",
-            "מד סיכון",
+            "שליטה וסיכון",
             "גרפים",
             "פעילות הסוכנים",
             "חיבור ברוקר",

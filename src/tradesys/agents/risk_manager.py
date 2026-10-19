@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from tradesys.agents.base import Agent
-from tradesys.clients.profile import ClientProfile, WatchlistEntry
+from tradesys.clients.profile import RISK_LEVELS, ClientProfile, WatchlistEntry
 from tradesys.core.clock import Clock, trading_day
 from tradesys.core.enums import OrderType, Side, TimeInForce
 from tradesys.core.models import (
@@ -21,6 +21,12 @@ from tradesys.data.regime import MarketRegime
 from tradesys.persistence.journal import Journal
 
 _ORDER_NAMESPACE = uuid.UUID("6f4d1e6a-2a1e-4f6d-9c2b-0f5a8c9d3e11")
+# Autopilot per-trade risk: the growth level in a rising market, the
+# conservative level otherwise. Both sit inside capital protection.
+AUTO_PILOT_RISK_PCT = {
+    True: RISK_LEVELS[3].risk_per_trade_pct,
+    False: RISK_LEVELS[1].risk_per_trade_pct,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,7 +264,7 @@ class RiskManager(Agent):
             return self._reject(candidate, reasons)
 
         qty, risk_amount, sizing_reasons = self._size(
-            candidate, account, entry, floor, conviction
+            candidate, account, entry, floor, conviction, positions, regime
         )
         if qty < 1:
             return self._reject(candidate, sizing_reasons or ["position sizes to zero shares"])
@@ -364,13 +370,28 @@ class RiskManager(Agent):
         entry: WatchlistEntry | None,
         floor: FloorState | None = None,
         conviction: float = 1.0,
+        positions: Sequence[Position] = (),
+        regime: MarketRegime | None = None,
     ) -> tuple[int, float, list[str]]:
         """Volatility-based sizing, then every cap applied as a hard minimum."""
         limits = self.profile.risk
         notes: list[str] = []
 
+        capital = account.equity
+        if limits.allocation_cap is not None and limits.allocation_cap < capital:
+            capital = limits.allocation_cap
+            notes.append(f"sized on the {capital:.2f} the client allocated to the robot")
+
+        risk_pct = limits.risk_per_trade_pct
+        if limits.auto_pilot:
+            # Bolder only when the market is confirmed rising; an unknown regime
+            # is treated as weak, never as permission.
+            rising = regime is not None and regime.risk_on
+            risk_pct = AUTO_PILOT_RISK_PCT[rising]
+            notes.append(f"autopilot: {risk_pct}% risk per trade ({'rising' if rising else 'weak'} market)")
+
         share = min(1.0, max(0.0, conviction))
-        risk_budget = account.equity * (limits.risk_per_trade_pct / 100.0) * share
+        risk_budget = capital * (risk_pct / 100.0) * share
         if share < 1.0:
             notes.append(f"risk budget at {share:.0%} of the ceiling by conviction")
         if floor is not None and floor.per_trade_budget < risk_budget:
@@ -389,7 +410,7 @@ class RiskManager(Agent):
         position_cap_pct = limits.max_position_pct
         if entry is not None and entry.max_position_pct is not None:
             position_cap_pct = min(position_cap_pct, entry.max_position_pct)
-        max_notional = account.equity * (position_cap_pct / 100.0)
+        max_notional = capital * (position_cap_pct / 100.0)
         capped = int(max_notional // candidate.entry)
         if capped < qty:
             notes.append(f"reduced to {capped} shares by {position_cap_pct:.2f}% position cap")
@@ -400,6 +421,13 @@ class RiskManager(Agent):
             if affordable < qty:
                 notes.append(f"reduced to {affordable} shares by available buying power")
                 qty = affordable
+
+        if limits.allocation_cap is not None:
+            invested = sum(p.market_value for p in positions)
+            room = int(max(limits.allocation_cap - invested, 0.0) // candidate.entry)
+            if room < qty:
+                notes.append(f"reduced to {room} shares by the client's allocation")
+                qty = room
 
         avg_volume = candidate.features.get("avg_volume", 0.0)
         if avg_volume > 0:

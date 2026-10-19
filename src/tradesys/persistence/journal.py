@@ -502,6 +502,21 @@ class Journal:
         ).fetchone()
         return float(row["day_start_equity"]) if row else 0.0
 
+    def record_deposit(self, amount: float) -> None:
+        """Lift every equity reference by a deposit, so new money is not profit.
+
+        Without this, a top-up would read as a gain: it would raise the peak the
+        drawdown is measured from only later, inflate the day's result, and make
+        the return since start look better than the trading was.
+        """
+        self._execute(
+            "UPDATE risk_state SET peak_equity=peak_equity+?, "
+            "day_start_equity=day_start_equity+?, "
+            "capital_base=CASE WHEN capital_base>0 THEN capital_base+? ELSE 0 END "
+            "WHERE client_id=?",
+            (amount, amount, amount, self.client_id),
+        )
+
     def record_trade_opened(self) -> None:
         self._execute(
             "UPDATE risk_state SET trades_opened=trades_opened+1, updated_at=?"

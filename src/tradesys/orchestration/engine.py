@@ -15,7 +15,7 @@ from tradesys.brokers.paper import PaperBroker
 from tradesys.clients.loader import ClientRegistry
 from tradesys.clients.profile import ClientProfile
 from tradesys.clients.secrets import EnvSecretResolver, SecretResolver
-from tradesys.clients.tracks import apply_track, read_track
+from tradesys.clients.tracks import apply_control, read_control, read_track
 from tradesys.core.clock import Clock, SystemClock, trading_day
 from tradesys.core.config import Settings
 from tradesys.core.errors import ConfigError
@@ -188,8 +188,10 @@ class TradingSystem:
         tenant = self.tenant(client_id)
         # The client's risk-meter level sets the four loss limits, capped by the
         # operator's max_risk_level; everything else stays as the YAML sets it.
-        profile = apply_track(
-            self.registry.load(client_id), read_track(tenant.data_dir)
+        profile = apply_control(
+            self.registry.load(client_id),
+            read_control(tenant.data_dir),
+            read_track(tenant.data_dir),
         )
         journal = Journal(tenant)
         memory = self._memory(tenant)
@@ -268,9 +270,11 @@ class ClientSession:
         return self.tenant.client_id
 
     def market_regime(self) -> MarketRegime | None:
-        """Current broad-market read, or None when the filter is off/unreadable."""
+        """Current broad-market read, or None when nothing uses it or it is unreadable."""
         limits = self.profile.risk
-        if not limits.regime_blocked_setups:
+        # Autopilot sizes from the regime too; skipping the read there would
+        # pin it to its weak-market setting forever.
+        if not limits.regime_blocked_setups and not limits.auto_pilot:
             return None
         return assess_regime(
             self.market_data,

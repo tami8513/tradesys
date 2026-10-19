@@ -122,6 +122,15 @@ class RiskProfile:
     # setup). Never above the ceiling: the Risk Manager clamps it.
     conviction_sizing: bool = False
 
+    # --- client control ----------------------------------------------------
+    # Most money the robot may have invested at once; None means the whole
+    # account. Sizing is measured against min(equity, cap), and a new entry is
+    # trimmed so open positions never exceed it.
+    allocation_cap: float | None = None
+    # Autopilot: the robot sets its own per-trade risk from the market regime,
+    # bolder in a rising market and smaller in a weak one, inside fixed limits.
+    auto_pilot: bool = False
+
     def __post_init__(self) -> None:
         pcts = {
             "max_drawdown_pct": self.max_drawdown_pct,
@@ -155,6 +164,8 @@ class RiskProfile:
             raise ConfigError("floor_cushion_per_trade_pct must be in (0, 100]")
         if self.trail_activation_r <= 0 or self.trail_distance_r <= 0:
             raise ConfigError("trail_activation_r and trail_distance_r must be positive")
+        if self.allocation_cap is not None and self.allocation_cap <= 0:
+            raise ConfigError("allocation_cap must be positive when set")
         if self.let_winners_run and not self.trailing_stop:
             raise ConfigError(
                 "let_winners_run needs trailing_stop: without it a position held past "

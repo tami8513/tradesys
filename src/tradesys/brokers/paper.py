@@ -56,6 +56,15 @@ class PaperBroker:
         write_json_atomic(self._path, self._state)
         self._mtime = signature(self._path)
 
+    def deposit(self, amount: float) -> None:
+        """Add simulated cash, the way a client tops up a real account."""
+        if amount <= 0:
+            raise BrokerError("a deposit must be positive")
+        with locked(self._path):
+            self._state = self._load(self._starting_cash)
+            self._state["cash"] = float(self._state["cash"]) + amount
+            self._flush()
+
     def positions(self) -> list[Position]:
         self._refresh()
         result: list[Position] = []
