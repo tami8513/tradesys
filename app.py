@@ -759,7 +759,9 @@ def equity_chart(closed_df: pd.DataFrame) -> go.Figure:
     return style_figure(fig, 300)
 
 
-def price_chart(frame: pd.DataFrame, symbol: str, overlays: list[dict]) -> go.Figure:
+def price_chart(
+    frame: pd.DataFrame, symbol: str, overlays: list[dict], story: list[dict] | None = None
+) -> go.Figure:
     fig = make_subplots(
         rows=2, cols=1, shared_xaxes=True, row_heights=[0.76, 0.24], vertical_spacing=0.04
     )
@@ -804,6 +806,28 @@ def price_chart(frame: pd.DataFrame, symbol: str, overlays: list[dict]) -> go.Fi
             row=1,
             col=1,
         )
+    for kind, marker in (
+        ("entry", dict(symbol="triangle-up", size=15, color=PALETTE["accent"])),
+        ("stop", dict(symbol="diamond", size=9, color=PALETTE["warning"])),
+        ("win", dict(symbol="x", size=14, color=PALETTE["positive"])),
+        ("loss", dict(symbol="x", size=14, color=PALETTE["negative"])),
+    ):
+        points = [point for point in story or [] if point["kind"] == kind]
+        if points:
+            fig.add_trace(
+                go.Scatter(
+                    x=[point["ts"] for point in points],
+                    y=[point["price"] for point in points],
+                    mode="markers",
+                    marker=marker,
+                    name={"entry": "כניסה", "stop": "הסטופ עלה", "win": "יציאה ברווח",
+                          "loss": "יציאה בהפסד"}[kind],
+                    text=[point["text"] for point in points],
+                    hovertemplate="%{text}<extra></extra>",
+                ),
+                row=1,
+                col=1,
+            )
     fig.add_trace(
         go.Bar(x=frame["ts"], y=frame["volume"], name="מחזור",
                marker_color=PALETTE["border"]),
@@ -1094,7 +1118,53 @@ def overview_details(snapshot: dict) -> None:
             st.dataframe(open_df, use_container_width=True, hide_index=True)
 
 
-def tab_charts(client_id: str, snapshot: dict) -> None:
+def trade_story(session, symbol: str) -> list[dict]:
+    """Markers for every trade in `symbol`: entry, each stop raise, and the exit."""
+    import re
+    from datetime import timedelta
+
+    from tradesys.orchestration.agent_report import EXIT_NAMES, SETUP_NAMES
+    from tradesys.orchestration.why import explain_rationale
+
+    journal = session.journal
+    trades = [t for t in journal.open_trades() + journal.closed_trades(limit=500)
+              if t.symbol == symbol]
+    story: list[dict] = []
+    for trade in trades:
+        setup = SETUP_NAMES.get(trade.setup.value, trade.setup.value)
+        story.append({
+            "kind": "entry",
+            "ts": trade.opened_at,
+            "price": trade.entry_price,
+            "text": f"כניסה ב-{trade.entry_price:,.2f} · {setup}<br>"
+                    f"{explain_rationale(trade.rationale)}<br>סטופ {trade.initial_stop or trade.stop_price:,.2f}",
+        })
+        if trade.closed_at and trade.exit_price is not None:
+            reason = EXIT_NAMES.get(trade.exit_reason, "יציאה")
+            if trade.exit_reason == "stop_loss" and (trade.realized_pnl or 0) > 0:
+                reason = "סטופ נגרר שנעל רווח"
+            story.append({
+                "kind": "win" if (trade.realized_pnl or 0) > 0 else "loss",
+                "ts": trade.closed_at,
+                "price": trade.exit_price,
+                "text": f"יציאה ב-{trade.exit_price:,.2f} · {reason}<br>"
+                        f"{trade.realized_pnl or 0:+,.2f}$ ({trade.r_multiple():+.2f}R)",
+            })
+    since = datetime.now(timezone.utc) - timedelta(days=400)
+    for event in journal.agent_events(since):
+        if event["agent"] == "monitor" and event["kind"] == "stop_raised" and event["symbol"] == symbol:
+            prices = re.findall(r"[\d.]+", event["detail"].split("stop", 1)[-1])
+            if len(prices) >= 2:
+                story.append({
+                    "kind": "stop",
+                    "ts": datetime.fromisoformat(event["created_at"]),
+                    "price": float(prices[1]),
+                    "text": f"הסטופ עלה מ-{prices[0]} ל-{prices[1]}",
+                })
+    return story
+
+
+def tab_charts(client_id: str, snapshot: dict, session) -> None:
     chosen = st.selectbox("בחר נייר ערך", snapshot["symbols"], key="chart_symbol")
     frame = load_bars(client_id, chosen, st.session_state.get("_bust", 0))
     if frame.empty:
@@ -1127,9 +1197,23 @@ def tab_charts(client_id: str, snapshot: dict) -> None:
     metrics[2].metric("ממוצע 20", f"${sma20:,.2f}" if pd.notna(sma20) else "—")
     metrics[3].metric("נרות", f"{len(frame):,}")
 
-    st.plotly_chart(price_chart(frame, chosen, overlays), use_container_width=True)
+    # A fill outside the candles' range means the journal and this price feed
+    # disagree (a history recorded on another feed); drawing it would mislead.
+    low, high = frame["low"].min() * 0.9, frame["high"].max() * 1.1
+    story = [p for p in trade_story(session, chosen) if low <= p["price"] <= high]
+    st.plotly_chart(price_chart(frame, chosen, overlays, story), use_container_width=True)
     if overlays:
         st.caption("הקווים המקווקווים הם רמות הכניסה, הסטופ והיעד של הפוזיציה שלך.")
+    if story:
+        st.caption("משולש: כניסה · יהלום: הסטופ עלה · איקס: יציאה. העבר את העכבר לקבלת ההסבר.")
+
+    from datetime import timedelta
+
+    from tradesys.orchestration.why import timeline
+
+    st.markdown(f"##### הסיפור של {chosen}")
+    since = datetime.now(timezone.utc) - timedelta(days=90)
+    render_why(timeline(session.journal.agent_events(since), chosen), limit=25)
 
 
 def render_why(entries, limit: int = 40) -> None:
@@ -1990,7 +2074,7 @@ def client_portal(client_id: str, demo: bool = False) -> None:
     with tabs[1]:
         tab_protection(client_id, snapshot, session, armed)
     with tabs[2]:
-        tab_charts(client_id, snapshot)
+        tab_charts(client_id, snapshot, session)
     with tabs[3]:
         tab_agents(snapshot, session, armed)
     with tabs[4]:
