@@ -136,3 +136,16 @@ def test_order_id_is_deterministic_per_day(tmp_path, clock):
     first = risk.evaluate(make_candidate(), make_account(), [], make_stats())
     second = risk.evaluate(make_candidate(), make_account(), [], make_stats())
     assert first.order.client_order_id == second.order.client_order_id
+
+
+def test_releasing_a_drawdown_halt_rebases_the_peak(tmp_path, clock):
+    risk, journal = build(tmp_path, clock, max_drawdown_pct=2.0)
+    assert risk.preflight(make_account(equity=100_000.0)).ok
+    assert not risk.preflight(make_account(equity=97_000.0)).ok
+
+    # Without a rebase the same drawdown halts again on the next check.
+    journal.clear_halt()
+    assert not risk.preflight(make_account(equity=97_000.0)).ok
+
+    journal.clear_halt(rebase_peak_to=97_000.0)
+    assert risk.preflight(make_account(equity=97_000.0)).ok

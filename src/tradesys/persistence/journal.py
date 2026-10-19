@@ -522,7 +522,19 @@ class Journal:
             (reason, datetime.now(timezone.utc).isoformat(), self.client_id),
         )
 
-    def clear_halt(self) -> None:
+    def clear_halt(self, rebase_peak_to: float | None = None) -> None:
+        """Lift a halt. `rebase_peak_to` restarts drawdown measurement from that equity.
+
+        Without the rebase, lifting a drawdown halt while equity is still below the
+        old peak is a no-op: the next preflight measures the same drawdown and
+        halts again. Releasing a halt means accepting today's equity as the new
+        peak, so a fresh drawdown budget starts from here.
+        """
+        if rebase_peak_to is not None:
+            self._execute(
+                "UPDATE risk_state SET peak_equity=? WHERE client_id=?",
+                (rebase_peak_to, self.client_id),
+            )
         self._execute(
             "UPDATE risk_state SET halted=0, halt_reason='', updated_at=? WHERE client_id=?",
             (datetime.now(timezone.utc).isoformat(), self.client_id),

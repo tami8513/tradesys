@@ -855,6 +855,27 @@ def render_lifecycle(fleet: pd.DataFrame, armed: bool) -> None:
             load_fleet.clear()
             st.rerun()
 
+    halted, halt_reason = session.journal.halt_state()
+    if halted and lifecycle.active:
+        st.divider()
+        st.markdown("**שחרור עצירת מסחר**")
+        st.warning(f"המסחר של {client_id} עצור: {halt_reason}", icon="🛑")
+        st.caption(
+            "שחרור מתחיל למדוד את הירידה מחדש מהשווי הנוכחי "
+            f"({row['equity']:,.2f}$). עברו על העסקאות שהובילו לעצירה לפני השחרור."
+        )
+        confirm_release = st.text_input(f"הקלד `{client_id}` לאישור", key="admin_release")
+        if st.button(
+            "שחרר עצירה",
+            disabled=not armed or confirm_release != client_id,
+            use_container_width=True,
+        ):
+            session.journal.clear_halt(rebase_peak_to=float(row["equity"]))
+            st.success(f"העצירה של {client_id} שוחררה. מגבלת הירידה נמדדת מעכשיו.")
+            invalidate()
+            load_fleet.clear()
+            st.rerun()
+
     st.divider()
     st.markdown("##### הגדרות חיוב")
     directory = tenant_dir(client_id)
