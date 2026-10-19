@@ -573,7 +573,7 @@ def load_snapshot(client_id: str, bust: int) -> dict:
     unrealized = sum(p.unrealized_pnl for p in positions)
     day_pnl = account.equity - day_start if day_start > 0 else None
     drawdown_pct = (
-        (stats.peak_equity - account.equity) / stats.peak_equity * 100
+        max(stats.peak_equity - account.equity, 0.0) / stats.peak_equity * 100
         if stats.peak_equity > 0
         else 0.0
     )

@@ -151,12 +151,17 @@ def load_fleet(client_ids: tuple[str, ...], bust: int) -> pd.DataFrame:
     הוא שהנמען של התוצאה הוא המנהל, לא לקוח.
     """
     del bust
-    from app import get_session
+    from datetime import timedelta
 
+    from app import get_session
+    from tradesys.orchestration.why import timeline
+
+    since = datetime.now(timezone.utc) - timedelta(days=3)
     rows = []
     for client_id in client_ids:
         try:
             session = get_session(client_id)
+            latest = timeline(session.journal.agent_events(since))
             account = session.broker.account()
             stats = session.journal.day_stats(trading_day(session.clock))
             day_start = session.journal.day_start_equity()
@@ -166,7 +171,7 @@ def load_fleet(client_ids: tuple[str, ...], bust: int) -> pd.DataFrame:
             closed = session.journal.closed_trades(limit=1000)
 
             drawdown = (
-                (stats.peak_equity - account.equity) / stats.peak_equity * 100
+                max(stats.peak_equity - account.equity, 0.0) / stats.peak_equity * 100
                 if stats.peak_equity > 0
                 else 0.0
             )
@@ -195,6 +200,8 @@ def load_fleet(client_ids: tuple[str, ...], bust: int) -> pd.DataFrame:
                     "paper": session.profile.broker.paper,
                     "closed_count": len(closed),
                     "halt_reason": halt_reason,
+                    "max_drawdown_pct": session.profile.risk.max_drawdown_pct,
+                    "last_word": latest[0].text if latest else "",
                 }
             )
         except (TradesysError, OSError) as exc:
@@ -214,6 +221,8 @@ def load_fleet(client_ids: tuple[str, ...], bust: int) -> pd.DataFrame:
                     "paper": True,
                     "closed_count": 0,
                     "halt_reason": "",
+                    "max_drawdown_pct": 0.0,
+                    "last_word": "",
                 }
             )
     return pd.DataFrame(rows)
@@ -496,6 +505,75 @@ def render_fleet(fleet: pd.DataFrame) -> None:
     columns[4].metric("דורשים טיפול", int((fleet["health"] != "תקין").sum()))
 
     st.markdown("")
+    st.markdown(fleet_cards_html(fleet), unsafe_allow_html=True)
+
+    with st.expander("טבלה מלאה"):
+        render_fleet_table(fleet)
+
+    for _, row in fleet.iterrows():
+        if row["health"] in ("עצור", "מושהה"):
+            st.caption(
+                f"{row['client_id']} — {row['health']}: "
+                f"{row['halt_reason'] or 'ללא פירוט'}"
+            )
+
+
+HEALTH_COLOURS = {
+    "תקין": PALETTE["positive"],
+    "בסיכון": PALETTE["warning"],
+    "עצור": PALETTE["negative"],
+    "מושהה": PALETTE["muted"],
+}
+
+
+def fleet_cards_html(fleet: pd.DataFrame) -> str:
+    """One card per client: health, equity, today, drawdown against its limit."""
+    cards = []
+    for _, row in fleet.iterrows():
+        colour = HEALTH_COLOURS.get(row["health"], PALETTE["negative"])
+        day = row["day_pnl"]
+        day_colour = PALETTE["positive"] if day >= 0 else PALETTE["negative"]
+        limit = row["max_drawdown_pct"] or 1.0
+        # Equity above a peak not yet rolled forward reads as negative drawdown.
+        drawdown = max(row["drawdown_pct"], 0.0)
+        used = min(drawdown / limit * 100, 100.0)
+        bar_colour = (
+            PALETTE["negative"] if used >= 75 else PALETTE["warning"] if used >= 40
+            else PALETTE["positive"]
+        )
+        mode = "נייר" if row["paper"] else "כסף אמיתי"
+        last = (
+            f'<div style="font-size:12px;color:{PALETTE["muted"]};margin-top:10px;'
+            f'line-height:1.5">{html.escape(row["last_word"])}</div>'
+            if row["last_word"] else ""
+        )
+        cards.append(
+            f'<div class="ts-card" style="border-top:3px solid {colour};border-radius:0 0 14px 14px">'
+            '<div style="display:flex;justify-content:space-between;align-items:center">'
+            f'<div><div style="font-weight:700">{html.escape(str(row["name"]))}</div>'
+            f'<div style="font-size:11px;color:{PALETTE["muted"]}">'
+            f'{html.escape(row["client_id"])} · {html.escape(str(row["plan"]))} · {mode}</div></div>'
+            f'<span style="color:{colour};border:1px solid {colour};border-radius:999px;'
+            f'padding:2px 10px;font-size:12px">{html.escape(str(row["health"]))}</span></div>'
+            f'<div style="font-size:24px;font-weight:800;direction:ltr;text-align:right;'
+            f'margin-top:10px">${row["equity"]:,.0f}</div>'
+            f'<div style="font-size:12px;color:{PALETTE["muted"]}">היום '
+            f'<span style="color:{day_colour};direction:ltr;unicode-bidi:isolate">{day:+,.2f}</span>'
+            f' · {int(row["positions"])} פוזיציות פתוחות</div>'
+            f'<div style="font-size:11px;color:{PALETTE["muted"]};margin-top:10px">'
+            f'ירידה מהשיא {drawdown:.2f}% מתוך {limit:g}%</div>'
+            f'<div style="height:6px;background:{PALETTE["border"]};border-radius:3px;'
+            f'overflow:hidden;margin-top:4px;direction:rtl">'
+            f'<div style="width:{used:.1f}%;height:100%;background:{bar_colour}"></div></div>'
+            f"{last}</div>"
+        )
+    return (
+        '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));'
+        f'gap:14px">{"".join(cards)}</div>'
+    )
+
+
+def render_fleet_table(fleet: pd.DataFrame) -> None:
     display = fleet[
         [
             "client_id",
@@ -538,13 +616,6 @@ def render_fleet(fleet: pd.DataFrame) -> None:
         use_container_width=True,
         hide_index=True,
     )
-
-    for _, row in fleet.iterrows():
-        if row["health"] in ("עצור", "מושהה"):
-            st.caption(
-                f"{row['client_id']} — {row['health']}: "
-                f"{row['halt_reason'] or 'ללא פירוט'}"
-            )
 
 
 def render_accounts(fleet: pd.DataFrame, armed: bool) -> None:
