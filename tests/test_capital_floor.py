@@ -219,7 +219,7 @@ def system_and_dir(tmp_path):
 
     root = Path(__file__).resolve().parent.parent
     system = TradingSystem(Settings(clients_dir=root / "clients", data_dir=tmp_path))
-    return system, system.tenant("tal_dahan").data_dir
+    return system, system.tenant("demo_showcase").data_dir
 
 
 def test_risk_level_sets_all_four_loss_limits_together(tmp_path):
@@ -230,7 +230,7 @@ def test_risk_level_sets_all_four_loss_limits_together(tmp_path):
     write_track(tenant_dir, 2, 100_000.0)
     assert read_track(tenant_dir).level == 2
 
-    session = system.for_client("tal_dahan")
+    session = system.for_client("demo_showcase")
     try:
         chosen, level = session.profile.risk, RISK_LEVELS[2]
         assert chosen.capital_floor_pct == level.capital_floor_pct
@@ -238,7 +238,7 @@ def test_risk_level_sets_all_four_loss_limits_together(tmp_path):
         assert chosen.risk_per_trade_pct == level.risk_per_trade_pct
         assert chosen.max_daily_loss_pct == level.max_daily_loss_pct
         assert chosen.max_drawdown_pct == level.max_drawdown_pct
-        default = system.registry.load("tal_dahan").risk
+        default = system.registry.load("demo_showcase").risk
         assert chosen.max_position_pct == default.max_position_pct
     finally:
         session.close()

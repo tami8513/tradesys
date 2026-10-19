@@ -141,7 +141,7 @@ def settings(tmp_path: Path, **overrides) -> Settings:
 
 def test_paper_tenant_uses_synthetic_prices_without_platform_keys(tmp_path):
     system = TradingSystem(settings(tmp_path))
-    session = system.for_client("tal_dahan")
+    session = system.for_client("demo_showcase")
     try:
         assert isinstance(session.market_data, SyntheticMarketData)
         assert system.market_data_source() == "synthetic"
@@ -156,7 +156,7 @@ def test_paper_tenant_uses_live_prices_with_platform_keys(tmp_path):
     system = TradingSystem(
         settings(tmp_path, market_data_key_id="k", market_data_secret_key="s")
     )
-    session = system.for_client("tal_dahan")
+    session = system.for_client("demo_showcase")
     try:
         assert isinstance(session.market_data, AlpacaMarketData)
         assert isinstance(session.broker, PaperBroker)

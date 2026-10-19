@@ -118,7 +118,7 @@ def test_a_full_cycle_writes_the_agent_event_log(tmp_path):
         market_data=SyntheticMarketData(),
         earnings=NullEarningsCalendar(),
     )
-    session = system.for_client("tal_dahan")
+    session = system.for_client("demo_showcase")
     try:
         cycle = session.run_cycle()
         logged = session.journal.agent_events(T0 - timedelta(days=3650))

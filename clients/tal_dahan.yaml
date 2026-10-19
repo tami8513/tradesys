@@ -12,10 +12,11 @@ tags: [founder, small_cap_momentum]
 max_risk_level: 5
 
 broker:
-  name: paper            # paper | alpaca
-  paper: true
-  # Reads TRADESYS__TAL_DAHAN__ALPACA__KEY_ID / __SECRET_KEY when name is alpaca.
-  credential_ref: TRADESYS__TAL_DAHAN__ALPACA
+  name: alpaca           # paper | alpaca
+  paper: true            # Alpaca's paper account: real order handling, simulated money
+  # Reads TRADESYS_MARKET_DATA__KEY_ID / __SECRET_KEY: the platform's Alpaca paper
+  # keys, used by this one tenant only. A second client needs keys of its own.
+  credential_ref: TRADESYS_MARKET_DATA
 
 risk:
   max_drawdown_pct: 2.0        # peak-to-current equity; a breach latches a halt
