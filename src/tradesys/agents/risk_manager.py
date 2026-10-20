@@ -18,6 +18,7 @@ from tradesys.core.models import (
 from tradesys.core.tenancy import TenantContext
 from tradesys.data.earnings import EarningsCalendar, NullEarningsCalendar
 from tradesys.data.regime import MarketRegime
+from tradesys.data.sectors import sector_of
 from tradesys.persistence.journal import Journal
 
 _ORDER_NAMESPACE = uuid.UUID("6f4d1e6a-2a1e-4f6d-9c2b-0f5a8c9d3e11")
@@ -186,6 +187,7 @@ class RiskManager(Agent):
         regime: MarketRegime | None = None,
         *,
         conviction: float = 1.0,
+        twin: tuple[str, float] | None = None,
     ) -> RiskDecision:
         """Gate one candidate.
 
@@ -209,6 +211,16 @@ class RiskManager(Agent):
         regime_reason = self._regime_reason(candidate, regime)
         if regime_reason:
             reasons.append(regime_reason)
+
+        # `twin` is the most correlated held name, measured by the caller like
+        # the regime, so this class stays free of I/O.
+        if limits.max_correlation is not None and twin is not None:
+            other, correlation = twin
+            if correlation >= limits.max_correlation:
+                reasons.append(
+                    f"moves with {other} (correlation {correlation:.2f} >= "
+                    f"{limits.max_correlation:.2f}); holding both doubles one bet"
+                )
 
         entry = self.profile.entry_for(candidate.symbol)
         if entry is None:
@@ -427,6 +439,18 @@ class RiskManager(Agent):
             room = int(max(limits.allocation_cap - invested, 0.0) // candidate.entry)
             if room < qty:
                 notes.append(f"reduced to {room} shares by the client's allocation")
+                qty = room
+
+        if limits.max_sector_pct is not None:
+            sector = sector_of(candidate.symbol)
+            in_sector = sum(p.market_value for p in positions if sector_of(p.symbol) == sector)
+            ceiling = capital * limits.max_sector_pct / 100
+            room = int(max(ceiling - in_sector, 0.0) // candidate.entry)
+            if room < qty:
+                notes.append(
+                    f"reduced to {room} shares by the {limits.max_sector_pct:g}% cap "
+                    f"on sector {sector}"
+                )
                 qty = room
 
         avg_volume = candidate.features.get("avg_volume", 0.0)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from typing import Sequence
 
 from tradesys.agents.execution import ExecutionAgent, ExecutionOutcome
 from tradesys.agents.hunter import LeaderHunter
@@ -21,7 +22,8 @@ from tradesys.core.clock import Clock, SystemClock, trading_day
 from tradesys.core.config import Settings
 from tradesys.core.errors import ConfigError
 from tradesys.core.logging import configure, get_logger
-from tradesys.core.models import Candidate
+from tradesys.core.models import Candidate, Position
+from tradesys.data.indicators import return_correlation
 from tradesys.core.tenancy import TenantContext
 from tradesys.data.earnings import (
     EarningsCalendar,
@@ -37,6 +39,7 @@ from tradesys.orchestration.agent_report import REASON_SEP
 from tradesys.persistence.journal import Journal
 
 AgentEvent = tuple[str, str, str, str]
+CORRELATION_BARS = 61     # sixty daily returns
 
 
 def _monitor_events(report: MonitorReport) -> list[AgentEvent]:
@@ -348,7 +351,13 @@ class ClientSession:
                 )
             candidate = self._at_live_price(candidate)
             decision: RiskDecision = self.risk.evaluate(
-                candidate, account, positions, stats, regime, conviction=conviction
+                candidate,
+                account,
+                positions,
+                stats,
+                regime,
+                conviction=conviction,
+                twin=self._closest_twin(candidate.symbol, positions),
             )
             if not decision.approved:
                 report.rejections.append((candidate.symbol, decision.reasons))
@@ -383,6 +392,29 @@ class ClientSession:
         self.journal.log_events(events, report.started_at)
         log.info(report.summary())
         return report
+
+    def _closest_twin(
+        self, symbol: str, positions: Sequence[Position]
+    ) -> tuple[str, float] | None:
+        """The held name whose daily returns track `symbol` most closely."""
+        if self.profile.risk.max_correlation is None:
+            return None
+        held = [p.symbol for p in positions if p.symbol != symbol]
+        if not held:
+            return None
+        try:
+            mine = self.market_data.history(symbol, timeframe="1Day", limit=CORRELATION_BARS)
+            pairs = [
+                (other, return_correlation(
+                    mine,
+                    self.market_data.history(other, timeframe="1Day", limit=CORRELATION_BARS),
+                ))
+                for other in held
+            ]
+        except Exception:  # unmeasurable means unknown, and the sector cap still applies
+            return None
+        measured = [(other, c) for other, c in pairs if c is not None]
+        return max(measured, key=lambda pair: pair[1]) if measured else None
 
     def _at_live_price(self, candidate: Candidate) -> Candidate:
         """Re-price an idea at the live trade before the Risk Manager sizes it.

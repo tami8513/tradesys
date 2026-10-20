@@ -5,6 +5,28 @@ from typing import Sequence
 from tradesys.core.models import Bar
 
 
+def return_correlation(a: Sequence[Bar], b: Sequence[Bar], window: int = 60) -> float | None:
+    """Pearson correlation of two names' daily returns over their shared days.
+
+    Days are matched by date, not position, so a halt or a missing bar in one
+    series cannot pair Monday's move with Tuesday's.
+    """
+    a_close = {bar.ts.date(): bar.close for bar in a}
+    b_close = {bar.ts.date(): bar.close for bar in b}
+    days = sorted(set(a_close) & set(b_close))[-(window + 1):]
+    if len(days) < 21:
+        return None
+    ra = [a_close[d] / a_close[p] - 1 for p, d in zip(days, days[1:])]
+    rb = [b_close[d] / b_close[p] - 1 for p, d in zip(days, days[1:])]
+    mean_a, mean_b = sum(ra) / len(ra), sum(rb) / len(rb)
+    cov = sum((x - mean_a) * (y - mean_b) for x, y in zip(ra, rb))
+    var_a = sum((x - mean_a) ** 2 for x in ra)
+    var_b = sum((y - mean_b) ** 2 for y in rb)
+    if var_a <= 0 or var_b <= 0:
+        return None
+    return cov / (var_a * var_b) ** 0.5
+
+
 def closes(bars: Sequence[Bar]) -> list[float]:
     return [b.close for b in bars]
 

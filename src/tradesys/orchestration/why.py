@@ -41,6 +41,19 @@ _REASONS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
         (r"^position sizes to zero shares", "גודל הפוזיציה יצא אפס אחרי כל המגבלות"),
         (r"^duplicate client_order_id.*", "הרעיון הזה כבר נשלח היום, ולא שולחים אותו פעמיים"),
         (r"^broker rejected: (.*)", r"הברוקר דחה את הפקודה: \1"),
+        (
+            r"^moves with (\S+) \(correlation ([\d.]+).*",
+            r"המניה זזה כמעט בדיוק כמו \1 שכבר בתיק (מתאם \2). שתיהן יחד הן אותו הימור פעמיים",
+        ),
+        (
+            r"^reduced to 0 shares by the ([\d.]+)% cap on sector (\S+)",
+            r"הענף כבר מלא: מותר עד \1% מהתיק בענף אחד",
+        ),
+        (r"^reduced to 0 shares by the client's allocation", "הסכום שהלקוח הקצה לרובוט כבר מושקע במלואו"),
+        (r"^reduced to (\d+) shares by .*", r"הכמות הוקטנה ל-\1 מניות בגלל מגבלת גודל"),
+        (r"^sized on the ([\d.]+) the client allocated.*", r"הגודל חושב לפי הסכום שהלקוח הקצה לרובוט ($\1)"),
+        (r"^autopilot: ([\d.]+)% risk per trade.*", r"טייס אוטומטי: \1% סיכון לעסקה"),
+        (r"^risk budget at (\d+)% of the ceiling by conviction", r"סוכן ההתקפה הקצה \1% מתקרת הסיכון"),
     )
 )
 

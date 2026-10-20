@@ -127,6 +127,14 @@ class RiskProfile:
     # account. Sizing is measured against min(equity, cap), and a new entry is
     # trimmed so open positions never exceed it.
     allocation_cap: float | None = None
+
+    # --- diversification ----------------------------------------------------
+    # Most of the robot's capital allowed in one sector at once, in percent.
+    # Per-trade stops cannot help when a whole sector falls on the same day.
+    max_sector_pct: float | None = None
+    # A new name moving this closely with one already held is the same bet
+    # twice; at or above this daily-return correlation it is refused.
+    max_correlation: float | None = None
     # Autopilot: the robot sets its own per-trade risk from the market regime,
     # bolder in a rising market and smaller in a weak one, inside fixed limits.
     auto_pilot: bool = False
@@ -164,6 +172,10 @@ class RiskProfile:
             raise ConfigError("floor_cushion_per_trade_pct must be in (0, 100]")
         if self.trail_activation_r <= 0 or self.trail_distance_r <= 0:
             raise ConfigError("trail_activation_r and trail_distance_r must be positive")
+        if self.max_sector_pct is not None and not 0 < self.max_sector_pct <= 100:
+            raise ConfigError("max_sector_pct must be in (0, 100] when set")
+        if self.max_correlation is not None and not 0 < self.max_correlation <= 1:
+            raise ConfigError("max_correlation must be in (0, 1] when set")
         if self.allocation_cap is not None and self.allocation_cap <= 0:
             raise ConfigError("allocation_cap must be positive when set")
         if self.let_winners_run and not self.trailing_stop:
