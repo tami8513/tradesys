@@ -54,7 +54,7 @@ class RecordingBroker(PaperBroker):
         self.stop_updates: list[tuple[str, float]] = []
         self.fail = fail
 
-    def update_stop(self, symbol: str, stop_price: float) -> None:
+    def protect(self, symbol: str, qty: int, stop_price: float) -> None:
         if self.fail:
             raise RuntimeError("broker unreachable")
         self.stop_updates.append((symbol, stop_price))
@@ -203,6 +203,13 @@ def test_time_stop_still_closes_a_trade_that_went_nowhere(tmp_path, clock):
 
     clock.advance(11 * 86400)
     assert stack.at(20.5).closed[0].reason is ExitReason.TIME_STOP
+
+
+def test_every_sweep_confirms_the_broker_holds_the_stop(tmp_path, clock):
+    stack = Stack(tmp_path, clock)
+    stack.open_position()
+    stack.at(20.5)
+    assert stack.broker.stop_updates[-1] == ("RIVN", pytest.approx(18.0))
 
 
 def test_letting_winners_run_requires_a_trailing_stop():

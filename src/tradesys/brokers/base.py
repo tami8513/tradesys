@@ -23,5 +23,9 @@ class Broker(Protocol):
 
     def close_position(self, symbol: str) -> OrderResult | None: ...
 
-    def update_stop(self, symbol: str, stop_price: float) -> None:
-        """Move a resting server-side stop. A broker without one has nothing to move."""
+    def protect(self, symbol: str, qty: int, stop_price: float) -> None:
+        """Make sure a resting server-side stop for `qty` sits at `stop_price`.
+
+        Moves an existing stop, or places one when none is working (an expired
+        leg, a manual cancel). A broker without resting orders has nothing to do.
+        """

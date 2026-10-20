@@ -114,6 +114,11 @@ class AlpacaBroker:
             "time_in_force": order.time_in_force.value,
             "client_order_id": order.client_order_id,
         }
+        if order.stop_loss is not None:
+            # The legs inherit the entry's time in force, and a day stop expires at
+            # the close: the first live position woke up with no stop at the broker.
+            # An unfilled entry is cancelled within seconds anyway (see below).
+            body["time_in_force"] = "gtc"
         if order.order_type is OrderType.LIMIT:
             if order.limit_price is None:
                 raise BrokerError("limit order submitted without a limit price")
@@ -169,18 +174,32 @@ class AlpacaBroker:
             return None
         return _parse_order(self.client_id, self._await_final(payload))
 
-    def update_stop(self, symbol: str, stop_price: float) -> None:
-        """Move the resting stop leg, so a raised stop also holds between sweeps."""
+    def protect(self, symbol: str, qty: int, stop_price: float) -> None:
+        """Keep a resting stop at the broker, so the position is guarded even when
+        this system is down: move it if it drifted, place a GTC one if none works."""
+        symbol = symbol.upper()
+        price = f"{stop_price:.2f}"
         stops = [
-            o for o in self._working_orders(symbol.upper())
+            o for o in self._working_orders(symbol)
             if o.get("type") in ("stop", "stop_limit") and o.get("side") == "sell"
         ]
         if not stops:
-            raise BrokerError(f"no resting stop order for {symbol.upper()} to move")
-        for order in stops:
             self._request(
-                "PATCH", f"/v2/orders/{order['id']}", {"stop_price": f"{stop_price:.2f}"}
+                "POST",
+                "/v2/orders",
+                {
+                    "symbol": symbol,
+                    "qty": str(qty),
+                    "side": "sell",
+                    "type": "stop",
+                    "stop_price": price,
+                    "time_in_force": "gtc",
+                },
             )
+            return
+        for order in stops:
+            if abs(float(order.get("stop_price") or 0) - stop_price) >= 0.01:
+                self._request("PATCH", f"/v2/orders/{order['id']}", {"stop_price": price})
 
     def _await_final(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         """Re-read a just-submitted order until it fills or the wait runs out.

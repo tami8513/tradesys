@@ -160,6 +160,8 @@ class PositionMonitor(Agent):
                 trade = self._trail(symbol, trade, price, report)
 
             signal = self._evaluate(trade, price, symbol in held, now)
+            if signal is None and symbol in held and trade.side is Side.BUY:
+                self._guard(symbol, trade, report)
             if signal is None:
                 continue
             try:
@@ -274,12 +276,20 @@ class PositionMonitor(Agent):
                 f"{symbol} stop {trade.stop_price:.2f} -> {updated.stop_price:.2f}"
             )
             try:
-                self._broker.update_stop(symbol, updated.stop_price)
+                self._broker.protect(symbol, updated.qty, updated.stop_price)
             except Exception as exc:
                 # Deliberately broad, as in the sweep: the journal stop is already
                 # raised and this monitor enforces it every pass either way.
                 report.errors.append(f"{symbol}: broker stop not moved ({exc})")
         return updated
+
+    def _guard(self, symbol: str, trade: TradeRecord, report: MonitorReport) -> None:
+        """Every sweep, make sure the broker holds a stop for this position."""
+        try:
+            self._broker.protect(symbol, trade.qty, trade.stop_price)
+        except Exception as exc:
+            # Deliberately broad: this sweep still enforces the journal stop itself.
+            report.errors.append(f"{symbol}: broker stop not confirmed ({exc})")
 
     def _trend_confirms(self, symbol: str, price: float) -> bool:
         """Price above a rising short average. Missing data means take the profit."""

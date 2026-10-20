@@ -148,7 +148,7 @@ class PaperBroker:
             submitted_at=datetime.now(timezone.utc),
         )
 
-    def update_stop(self, symbol: str, stop_price: float) -> None:
+    def protect(self, symbol: str, qty: int, stop_price: float) -> None:
         """No resting orders here: the PositionMonitor enforces the journal's stop."""
 
     def close_position(self, symbol: str) -> OrderResult | None:
