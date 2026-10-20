@@ -175,3 +175,11 @@ def test_an_expired_stop_leg_is_replaced_by_a_gtc_stop(tmp_path):
 def test_close_with_no_position_reports_none(tmp_path):
     fake = FakeAlpaca({("GET", "/v2/orders"): [[]], ("DELETE", "/v2/positions/SPY"): [None]})
     assert broker(tmp_path, fake).close_position("SPY") is None
+
+
+def test_a_limit_entry_gets_a_little_room_to_fill(tmp_path):
+    from dataclasses import replace
+
+    fake = FakeAlpaca({("POST", "/v2/orders"): [order_payload("filled", 3, 580.0)]})
+    broker(tmp_path, fake).submit(replace(entry(), order_type=OrderType.LIMIT, limit_price=580.0))
+    assert fake.payloads[0]["limit_price"] == "581.16"      # +0.2%

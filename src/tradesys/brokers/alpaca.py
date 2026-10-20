@@ -21,6 +21,7 @@ _STATUS_MAP = {
     "rejected": OrderStatus.REJECTED,
 }
 _FINAL_STATES = {"filled", "canceled", "expired", "rejected"}
+MARKETABLE_LIMIT_PCT = 0.2
 
 
 class AlpacaBroker:
@@ -122,7 +123,11 @@ class AlpacaBroker:
         if order.order_type is OrderType.LIMIT:
             if order.limit_price is None:
                 raise BrokerError("limit order submitted without a limit price")
-            body["limit_price"] = f"{order.limit_price:.2f}"
+            # A few cents of room so a limit at the last print fills instead of
+            # missing by a tick; it is bounded, so the size stays honest.
+            room = MARKETABLE_LIMIT_PCT / 100
+            room = 1 + room if order.side is Side.BUY else 1 - room
+            body["limit_price"] = f"{order.limit_price * room:.2f}"
         if order.stop_loss is not None:
             body["order_class"] = "bracket" if order.take_profit else "oto"
             body["stop_loss"] = {"stop_price": f"{order.stop_loss:.2f}"}

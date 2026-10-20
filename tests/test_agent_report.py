@@ -187,3 +187,29 @@ def test_offense_card_reports_how_the_budget_was_spread():
     cards = report(events=events)
     assert ("גודל מלא (מוכח)", "1") in cards["offense"].kpis
     assert ("75% (לא מוכח עדיין)", "2") in cards["offense"].kpis
+
+
+def test_ideas_are_repriced_at_the_live_trade_before_sizing(tmp_path):
+    """Full-tape bars lag 15 minutes on the free plan; a limit at that stale close
+    sat under a rising price and was cancelled unfilled."""
+    from pathlib import Path
+
+    from conftest import make_candidate
+    from tradesys.core.config import Settings
+    from tradesys.data.market_data import SyntheticMarketData
+    from tradesys.orchestration.engine import TradingSystem
+
+    class LivePrint(SyntheticMarketData):
+        def last_price(self, symbol):
+            return 21.5
+
+    root = Path(__file__).resolve().parent.parent
+    system = TradingSystem(Settings(clients_dir=root / "clients", data_dir=tmp_path),
+                           market_data=LivePrint())
+    session = system.for_client("demo_showcase")
+    try:
+        repriced = session._at_live_price(make_candidate(client_id="demo_showcase"))
+    finally:
+        session.close()
+    assert repriced.entry == 21.5
+    assert repriced.stop == 18.0 and repriced.target == 26.0

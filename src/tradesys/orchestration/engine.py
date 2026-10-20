@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from tradesys.agents.execution import ExecutionAgent, ExecutionOutcome
@@ -21,6 +21,7 @@ from tradesys.core.clock import Clock, SystemClock, trading_day
 from tradesys.core.config import Settings
 from tradesys.core.errors import ConfigError
 from tradesys.core.logging import configure, get_logger
+from tradesys.core.models import Candidate
 from tradesys.core.tenancy import TenantContext
 from tradesys.data.earnings import (
     EarningsCalendar,
@@ -345,6 +346,7 @@ class ClientSession:
                 events.append(
                     ("offense", "sized", candidate.symbol, f"{conviction:.2f}|{candidate.setup.value}")
                 )
+            candidate = self._at_live_price(candidate)
             decision: RiskDecision = self.risk.evaluate(
                 candidate, account, positions, stats, regime, conviction=conviction
             )
@@ -381,6 +383,23 @@ class ClientSession:
         self.journal.log_events(events, report.started_at)
         log.info(report.summary())
         return report
+
+    def _at_live_price(self, candidate: Candidate) -> Candidate:
+        """Re-price an idea at the live trade before the Risk Manager sizes it.
+
+        The Scout reads daily bars, and on the free data plan the full-tape bars
+        trail the market by 15 minutes. A limit at that stale close sat below a
+        rising price and was cancelled unfilled. The stop and target stay where
+        the setup put them, so the Risk Manager re-checks reward:risk and size at
+        the price actually paid, and refuses an idea the market has run away from.
+        """
+        try:
+            live = self.market_data.last_price(candidate.symbol)
+        except Exception:  # without a live print the original idea stands
+            return candidate
+        if live <= 0:
+            return candidate
+        return replace(candidate, entry=round(live, 4))
 
     def close(self) -> None:
         self.journal.close()
