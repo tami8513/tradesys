@@ -148,6 +148,13 @@ class AlpacaBroker:
             self._request("DELETE", f"/v2/positions/{order.symbol.upper()}", missing_ok=True)
         return _parse_order(self.client_id, payload)
 
+    def resting_stop(self, symbol: str) -> float | None:
+        """The stop price a working sell stop guards `symbol` at, if any."""
+        for order in self._working_orders(symbol.upper()):
+            if order.get("type") in ("stop", "stop_limit") and order.get("side") == "sell":
+                return float(order.get("stop_price") or 0) or None
+        return None
+
     def _working_orders(self, symbol: str) -> list[Mapping[str, Any]]:
         """Every order still working on `symbol`, bracket legs included.
 

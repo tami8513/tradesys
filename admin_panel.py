@@ -581,11 +581,37 @@ def build_share_card(session, top_n: int = 3) -> tuple[str, dict]:
 
 # ---------------------------------------------------------------- לשוניות
 
+def render_alerts() -> None:
+    """The watchdog's open findings, newest problems first."""
+    from app import ROOT
+    from tradesys.core.config import Settings
+    from tradesys.orchestration.watchdog import ICONS, AlertBook
+
+    book = AlertBook(Settings.from_env(ROOT).data_dir / "_platform" / "alerts.json").active()
+    rows = [
+        (entry["since"], client_id, entry)
+        for client_id, alerts in book.items()
+        for entry in alerts.values()
+    ]
+    if not rows:
+        st.success("סוכן השמירה: הכול תקין.", icon="🛡")
+        return
+    for since, client_id, entry in sorted(rows, key=lambda row: row[0], reverse=True):
+        st.markdown(
+            f'<div class="ts-entry" style="border-right-color:{PALETTE["negative"] if entry["level"] == "critical" else PALETTE["warning"]}">'
+            f'<div class="ts-entry-meta">{ICONS.get(entry["level"], "")} {html.escape(client_id)} · '
+            f'מאז {html.escape(since[:16].replace("T", " "))} UTC</div>'
+            f'{html.escape(entry["text"])}</div>',
+            unsafe_allow_html=True,
+        )
+
+
 def render_fleet(fleet: pd.DataFrame) -> None:
     st.markdown("##### סקירת הצי")
     if fleet.empty:
         st.info("לא הוגדרו לקוחות.")
         return
+    render_alerts()
 
     active = fleet[fleet["active"]]
     columns = st.columns(5)

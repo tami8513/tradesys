@@ -23,6 +23,13 @@ from tradesys.core.config import Settings
 from tradesys.core.logging import configure
 from tradesys.data.market_clock import MarketClock, market_clock
 from tradesys.orchestration.engine import TradingSystem
+from tradesys.orchestration.watchdog import (
+    AlertBook,
+    Notifier,
+    cycle_failure,
+    inspect,
+    notifier_from_env,
+)
 
 log = logging.getLogger("tradesys.scheduler")
 
@@ -57,19 +64,53 @@ def run_once(system: TradingSystem) -> dict[str, str]:
     return outcomes
 
 
+def watch(
+    system: TradingSystem,
+    book: AlertBook,
+    notifier: Notifier,
+    outcomes: dict[str, str] | None = None,
+) -> None:
+    """Inspect every due tenant and send what is new, still open, or resolved."""
+    now = datetime.now(timezone.utc)
+    for client_id in due_tenants(system):
+        session = None
+        try:
+            session = system.for_client(client_id)
+            alerts = inspect(session)
+            failure = cycle_failure(client_id, (outcomes or {}).get(client_id, ""))
+            if failure is not None:
+                alerts.append(failure)
+            for message in book.update(client_id, alerts, now):
+                notifier.send(message)
+        except Exception:
+            # The watchdog must never take the trading loop down with it.
+            log.exception("watchdog failed for %s", client_id)
+        finally:
+            if session is not None:
+                session.close()
+
+
 def seconds_until(moment: datetime, now: datetime) -> float:
     return max(0.0, (moment - now).total_seconds())
 
 
-def run_forever(system: TradingSystem, clock: MarketClock, cycle_minutes: float) -> None:
+def run_forever(
+    system: TradingSystem,
+    clock: MarketClock,
+    cycle_minutes: float,
+    notifier: Notifier | None = None,
+) -> None:
     log.info("scheduler started: cycle every %.0f min while the market is open", cycle_minutes)
+    book = AlertBook(system.settings.data_dir / "_platform" / "alerts.json")
+    notifier = notifier or notifier_from_env()
     while True:
         try:
             status = clock.status()
             if status.is_open:
-                run_once(system)
+                watch(system, book, notifier, run_once(system))
                 time.sleep(cycle_minutes * 60)
                 continue
+            watch(system, book, notifier)
             wait = seconds_until(status.next_open, datetime.now(timezone.utc))
             log.info(
                 "market closed (%s); next open %s; sleeping %.0f min",

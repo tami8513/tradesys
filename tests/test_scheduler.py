@@ -138,3 +138,40 @@ def test_request_urls_are_not_logged():
     tradesys_logging._CONFIGURED = False
     tradesys_logging.configure("INFO")
     assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
+
+
+def test_watch_sends_new_findings_and_a_crashed_cycle(tmp_path):
+    from tradesys.core.enums import OrderType, Side, TimeInForce
+    from tradesys.core.models import OrderRequest
+    from tradesys.orchestration.watchdog import AlertBook
+    from tradesys.scheduler import watch
+
+    system = TradingSystem(
+        Settings(clients_dir=ROOT / "clients", data_dir=tmp_path),
+        market_data=SyntheticMarketData(),
+    )
+    for client_id in system.registry.list_ids():
+        set_automation(system.tenant(client_id).data_dir, client_id == "demo_showcase")
+
+    session = system.for_client("demo_showcase")
+    session.broker.submit(OrderRequest(
+        client_id="demo_showcase", symbol="RIVN", side=Side.BUY, qty=5,
+        order_type=OrderType.MARKET, time_in_force=TimeInForce.DAY, client_order_id="orphan",
+    ))
+    session.close()
+
+    class Recorder:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, text):
+            self.sent.append(text)
+
+    notifier = Recorder()
+    book = AlertBook(tmp_path / "alerts.json")
+    watch(system, book, notifier, {"demo_showcase": "failed: RuntimeError: boom"})
+
+    assert any("RIVN" in m and "לא רשומה במערכת" in m for m in notifier.sent)
+    assert any("סבב המסחר נכשל" in m for m in notifier.sent)
+    watch(system, book, notifier)          # same problems, minutes later: no repeat
+    assert sum("RIVN" in m for m in notifier.sent) == 1
