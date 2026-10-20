@@ -1747,9 +1747,45 @@ def control_panel(client_id: str, snapshot: dict, session, armed: bool) -> str:
     return control.mode if control else "custom"
 
 
+@st.cache_resource(show_spinner=False)
+def get_asset_directory():
+    import httpx
+
+    from tradesys.data.asset_search import AssetDirectory
+
+    settings = Settings.from_env(ROOT)
+
+    def fetch() -> list[dict]:
+        response = httpx.get(
+            "https://paper-api.alpaca.markets/v2/assets",
+            params={"status": "active", "asset_class": "us_equity"},
+            headers={
+                "APCA-API-KEY-ID": settings.market_data_key_id,
+                "APCA-API-SECRET-KEY": settings.market_data_secret_key,
+            },
+            timeout=60,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    return AssetDirectory(settings.data_dir / "_platform", fetch)
+
+
+def add_pick(session, picks: list[str], ticker: str) -> None:
+    """Validate a ticker against market data, then save it as a pick."""
+    from tradesys.clients.picks import normalize, write_picks
+    from tradesys.core.errors import ConfigError
+
+    ticker = normalize(ticker)
+    bars = session.market_data.history(ticker, timeframe="1Day", limit=60)
+    if len(bars) < 60:
+        raise ConfigError(f"לא נמצאו מספיק נתוני מסחר עבור {ticker}")
+    write_picks(session.tenant.data_dir, [*picks, ticker])
+
+
 def my_stocks(client_id: str, session, armed: bool) -> None:
     """Stocks the client wants the robot to watch, on top of the leaders it picks."""
-    from tradesys.clients.picks import MAX_PICKS, normalize, read_picks, write_picks
+    from tradesys.clients.picks import MAX_PICKS, read_picks, write_picks
     from tradesys.core.errors import ConfigError
 
     st.markdown("###### המניות שלי")
@@ -1761,25 +1797,45 @@ def my_stocks(client_id: str, session, armed: bool) -> None:
         + "הוא קונה רק כשיש נקודת כניסה טובה ושומר הסיכון מאשר."
     )
 
-    add_col, button_col = st.columns([3, 1])
-    typed = add_col.text_input(
-        "סימול מניה", placeholder="NVDA", key=f"pick_input_{client_id}",
+    query = st.text_input(
+        "חיפוש",
+        placeholder="חפש מניה, קרן סל או מדד: אנבידיה, TEVA, נאסד\"ק, S&P 500, זהב…",
+        key=f"pick_search_{client_id}",
         label_visibility="collapsed",
     )
-    if button_col.button("הוסף", disabled=not armed or len(picks) >= MAX_PICKS,
-                         use_container_width=True, key=f"pick_add_{client_id}"):
+    if query.strip():
         try:
-            ticker = normalize(typed)
-            bars = session.market_data.history(ticker, timeframe="1Day", limit=60)
-            if len(bars) < 60:
-                raise ConfigError(f"לא נמצאו מספיק נתוני מסחר עבור {ticker}")
-            write_picks(session.tenant.data_dir, [*picks, ticker])
-            invalidate()
-            st.rerun()
-        except ConfigError as exc:
-            st.error(str(exc))
-        except Exception:  # a market-data failure must not break the settings tab
-            st.error("לא הצלחנו לבדוק את המניה כרגע. נסה שוב בעוד דקה.")
+            hits = get_asset_directory().search(query, limit=8)
+        except Exception:  # the broker's listing being down must not break the tab
+            hits = []
+            st.error("החיפוש לא זמין כרגע. נסה שוב בעוד דקה.")
+        if not hits:
+            st.caption("לא נמצאו תוצאות. נסה שם באנגלית או את סימול המניה.")
+        for hit in hits:
+            info_col, button_col = st.columns([4, 1])
+            note = f" · {hit.note}" if hit.note else ""
+            info_col.markdown(
+                f'<div class="ts-agent"><div><b>{esc(hit.symbol)}</b> · {esc(hit.kind)}{esc(note)}'
+                f'<div class="ts-agent-text">{esc(hit.name)}</div></div></div>',
+                unsafe_allow_html=True,
+            )
+            chosen = hit.symbol in picks
+            if button_col.button(
+                "נבחרה" if chosen else "הוסף",
+                disabled=not armed or chosen or len(picks) >= MAX_PICKS,
+                use_container_width=True,
+                key=f"pick_add_{client_id}_{hit.symbol}",
+            ):
+                try:
+                    add_pick(session, picks, hit.symbol)
+                    invalidate()
+                    st.rerun()
+                except ConfigError as exc:
+                    st.error(str(exc))
+                except Exception:  # a market-data failure must not break the tab
+                    st.error("לא הצלחנו לבדוק את המניה כרגע. נסה שוב בעוד דקה.")
+    if len(picks) >= MAX_PICKS:
+        st.caption(f"הגעת למקסימום של {MAX_PICKS} מניות. הסר אחת כדי להוסיף אחרת.")
     locked_hint(armed)
 
     for ticker in picks:
