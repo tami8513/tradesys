@@ -245,6 +245,8 @@ class ClientProfile:
     approval_symbols: tuple[str, ...] = ()
     # (symbol, ISO trading day, max dollars or None): standing approvals.
     preapprovals: tuple[tuple[str, str, float | None], ...] = ()
+    # (symbol, ATR multiple): a stop distance the strategy lab fitted to one pick.
+    pick_stops: tuple[tuple[str, float], ...] = ()
 
     def __post_init__(self) -> None:
         validate_client_id(self.client_id)
@@ -272,6 +274,9 @@ class ClientProfile:
     def entry_for(self, symbol: str) -> WatchlistEntry | None:
         wanted = symbol.upper()
         return next((e for e in self.watchlist if e.symbol == wanted), None)
+
+    def stop_multiple(self, symbol: str) -> float:
+        return dict(self.pick_stops).get(symbol.upper(), self.stop_atr_multiple)
 
     def allows_setup(self, symbol: str, setup: SetupType) -> bool:
         """A setup must be enabled per-symbol *and* not globally forbidden."""

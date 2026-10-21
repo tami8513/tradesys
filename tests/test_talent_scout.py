@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 from tradesys.agents.talent_scout import (
     TalentScout,
     _percentiles,
-    _sentiment,
+    sentiment,
     load_reports,
     save_reports,
 )
@@ -107,9 +107,9 @@ def test_trailing_the_benchmark_is_a_weakness():
 
 
 def test_sentiment_counts_whole_words_only():
-    assert _sentiment("Company will execute its plan") == 0
-    assert _sentiment("Revenue beats; analysts upgrade") == 2
-    assert _sentiment("Guidance cut after a miss") == -2
+    assert sentiment("Company will execute its plan") == 0
+    assert sentiment("Revenue beats; analysts upgrade") == 2
+    assert sentiment("Guidance cut after a miss") == -2
 
 
 def test_ties_share_a_rank():
@@ -184,3 +184,10 @@ def test_a_long_shot_needs_both_great_news_and_heavy_shorting():
     assert long_shots(news=GOOD_NEWS[:1])[0] == []
     flagged = [*GOOD_NEWS, {"headline": "PENNY plans stock offering", "summary": "", "symbols": ["PENNY"]}]
     assert long_shots(news=flagged)[0] == []
+
+
+def test_a_product_offering_is_not_a_share_sale():
+    from tradesys.agents.talent_scout import red_flags
+
+    assert red_flags([{"headline": "Updates across its AI offering with Nvidia"}]) == []
+    assert red_flags([{"headline": "Company prices $200M public offering"}]) == ["הנפקת מניות"]

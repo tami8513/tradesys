@@ -1573,7 +1573,146 @@ def analyst_panel(client_id: str, symbol: str) -> None:
     st.caption("קריאה טכנית של הגרף היומי, לא המלצת השקעה. הרובוט עדיין קונה רק דרך שומר הסיכון.")
 
 
-def tab_charts(client_id: str, snapshot: dict, session) -> None:
+@st.cache_resource(ttl=3600, show_spinner=False)
+def deep_inputs(client_id: str, symbol: str, day: str) -> dict:
+    """Everything the full analysis reads, once per symbol per hour."""
+    from tradesys.agents.strategy_lab import LOOKBACK, YEARS, run_lab
+    from tradesys.data.scouting_feeds import ScoutingFeeds
+
+    del day
+    bust = st.session_state.get("_bust", 0)
+    bars = load_daily_history(client_id, symbol, bust)
+    settings = Settings.from_env(ROOT)
+    feeds = ScoutingFeeds(
+        settings.market_data_key_id, settings.market_data_secret_key, settings.finnhub_api_key
+    )
+    return {
+        "reading": analyst_reading(client_id, symbol, bust),
+        "lab": run_lab(bars[-(LOOKBACK + YEARS * 252 + 20):]),
+        # Stories about this stock, not round-ups that name it among many.
+        "news": [n for n in feeds.news([symbol]) if symbol in n["symbols"] and len(n["symbols"]) <= 3],
+        "analysts": feeds.analysts(symbol),
+        "growth": feeds.growth(symbol),
+        "earnings": feeds.earnings_in_days(symbol),
+    }
+
+
+def send_robot_box(client_id: str, session, symbol: str, answer, lab, armed: bool) -> None:
+    """Hand the stock to the robot with the plan the strategy lab fitted to it."""
+    from tradesys.clients.picks import MAX_PICKS, Pick, read_picks, write_picks
+    from tradesys.orchestration.index_desk import reserved_symbols
+
+    if symbol in reserved_symbols(session.tenant.data_dir):
+        st.info(f"{symbol} שמור לרובוט המדדים, ולכן הרובוט הראשי לא סוחר בו.")
+        return
+    picks = read_picks(session.tenant.data_dir)
+    existing = next((p for p in picks if p.symbol == symbol), None)
+    plan = lab.best if lab else None
+    plan_text = (
+        f"הרובוט יקבל את {symbol} עם תוכנית שנבנתה מ-5 השנים שלה: {plan.label}. "
+        if plan else f"הרובוט יקבל את {symbol} עם ההגדרות הרגילות שלו. "
+    )
+    st.markdown(
+        f'<div class="ts-agent-text">{esc(plan_text)}הוא לא קונה מיד: הוא מחכה לנקודת כניסה לפי '
+        "התוכנית, ושומר הסיכון קובע את הגודל ואת ההגנה. זה יכול לקחת כמה ימים.</div>",
+        unsafe_allow_html=True,
+    )
+    ask = st.checkbox(
+        "✋ לשאול אותי לפני הקנייה", value=answer.level != "go",
+        key=f"deep_ask_{client_id}_{symbol}", disabled=not armed,
+    )
+    full = existing is None and len(picks) >= MAX_PICKS
+    label = "🤖 עדכן את התוכנית של הרובוט" if existing else "🤖 שלח את הרובוט"
+    if st.button(label, key=f"deep_send_{client_id}_{symbol}", disabled=not armed or full,
+                 type="primary", width="stretch"):
+        chosen = Pick(
+            symbol,
+            priority=True,
+            ask_first=ask,
+            setups=tuple(sorted(s.value for s in plan.setups)) if plan else (),
+            stop_atr=plan.stop if plan else None,
+        )
+        write_picks(
+            session.tenant.data_dir,
+            [chosen if p.symbol == symbol else p for p in picks] + ([] if existing else [chosen]),
+        )
+        invalidate()
+        st.success(f"{symbol} נשלחה לרובוט, עם ⭐ עדיפות. אפשר לראות ולשנות ב\"שליטה וסיכון\".")
+    if full:
+        st.caption(f"יש כבר {MAX_PICKS} מניות ב\"המניות שלי\". הסר אחת כדי לשלוח את הרובוט.")
+    locked_hint(armed)
+
+
+def deep_panel(client_id: str, session, symbol: str, armed: bool) -> None:
+    """A button on every chart: the full analysis, a recommendation, and sending the robot."""
+    from tradesys.agents.strategy_lab import score
+    from tradesys.orchestration.deep_analysis import verdict
+
+    key = f"deep_{symbol}"
+    if st.button(f"🔬 נתח את {symbol} לעומק והמלץ", key=f"deep_run_{client_id}_{symbol}",
+                 width="stretch"):
+        with st.spinner("בודק גרף, 5 שנים של היסטוריה, חדשות ואנליסטים…"):
+            try:
+                st.session_state[key] = deep_inputs(
+                    client_id, symbol, datetime.now(timezone.utc).date().isoformat()
+                )
+            except Exception:  # an outage must not break the chart tab
+                st.error("הניתוח לא זמין כרגע. נסה שוב בעוד דקה.")
+    inputs = st.session_state.get(key)
+    if not inputs:
+        return
+
+    answer = verdict(inputs["reading"], inputs["lab"], inputs["news"],
+                     inputs["analysts"], inputs["growth"], inputs["earnings"])
+    rows = "".join(
+        f'<li class="{"ts-scout-plus" if points > 0 else "ts-scout-minus" if points < 0 else ""}">'
+        f"{esc(why)} <b>{ltr(f'{points:+d}')}</b></li>"
+        for points, why in answer.reasons
+    )
+    st.markdown(
+        f'<div class="ts-brief ts-analyst-{ {"go": "enter", "careful": "maybe", "no": "avoid"}[answer.level] }">'
+        f'<div class="ts-brief-title">🔬 הניתוח המלא של {esc(symbol)} · ציון {answer.score:+d}</div>'
+        f'<div class="ts-brief-headline">{esc(answer.headline)}</div><ul>{rows}</ul></div>',
+        unsafe_allow_html=True,
+    )
+
+    lab = inputs["lab"]
+    if lab is not None:
+        table = [
+            {"שיטה": f"⭐ {plan.label}" if plan is lab.best else plan.label,
+             "4 שנים": plan.train.total, "השנה האחרונה": plan.test.total,
+             "נפילה מקסימלית": plan.train.max_drawdown, "עסקאות": plan.train.trades,
+             "הצלחה": plan.train.win_rate}
+            for plan in sorted(lab.plans, key=lambda p: -score(p.train))
+        ] + [{"שיטה": "פשוט להחזיק את המניה", "4 שנים": lab.hold_train.total,
+              "השנה האחרונה": lab.hold_test.total, "נפילה מקסימלית": lab.hold_train.max_drawdown,
+              "עסקאות": 1, "הצלחה": None}]
+        with st.expander(f"🧪 מעבדת האסטרטגיות: {len(lab.plans)} דרכים לסחור ב-{symbol} מאז {lab.first_day}"):
+            st.dataframe(
+                pd.DataFrame(table), hide_index=True, width="stretch",
+                column_config={
+                    "4 שנים": st.column_config.NumberColumn(format="%+.0f%%"),
+                    "השנה האחרונה": st.column_config.NumberColumn(format="%+.0f%%"),
+                    "נפילה מקסימלית": st.column_config.NumberColumn(format="%.0f%%"),
+                    "הצלחה": st.column_config.NumberColumn(format="%.0f%%"),
+                },
+            )
+            st.caption(
+                f"הרובוט נבחן על הכללים האמיתיים שלו. השיטה נבחרה לפי 4 השנים עד {lab.split_day}, "
+                "והשנה האחרונה היא מבחן על תקופה שלא שימשה לבחירה. כל עסקה כאן משקיעה את כל "
+                "הסכום, כדי להשוות שיטות. בפועל הרובוט קונה פוזיציה קטנה יותר."
+            )
+    if answer.hold_better:
+        st.info(
+            f"על {symbol}, החזקה פשוטה הייתה טובה יותר משיטת המסחר של הרובוט. אם אתה מאמין במניה "
+            "לטווח ארוך, להחזיק אותה עשוי להתאים יותר מלסחור בה."
+        )
+    if answer.level != "no":
+        send_robot_box(client_id, session, symbol, answer, lab, armed)
+    st.caption("זו בדיקה שקופה של נתונים, לא הבטחה לרווח. החלטת השקעה היא שלך.")
+
+
+def tab_charts(client_id: str, snapshot: dict, session, armed: bool) -> None:
     from datetime import timedelta
 
     from tradesys.data.chart_ranges import INTRADAY, NEW_YORK, WEEKLY
@@ -1656,6 +1795,8 @@ def tab_charts(client_id: str, snapshot: dict, session) -> None:
         "גרירה מזיזה את הגרף, גלגלת העכבר מגדילה."
         + (" משולש: כניסה · יהלום: הסטופ עלה · איקס: יציאה." if story else "")
     )
+
+    deep_panel(client_id, session, symbol, armed)
 
     with st.container(key="chart_cols"):
         analyst_col, history_col = st.columns(2)
@@ -3063,7 +3204,7 @@ def client_portal(client_id: str, demo: bool = False) -> None:
     with tabs[2]:
         tab_scout(client_id, session, armed)
     with tabs[3]:
-        tab_charts(client_id, snapshot, session)
+        tab_charts(client_id, snapshot, session, armed)
     with tabs[4]:
         tab_agents(snapshot, session, armed)
     with tabs[5]:

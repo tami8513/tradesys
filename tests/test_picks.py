@@ -265,3 +265,17 @@ def test_an_approval_is_capped_even_without_an_amount_or_above_the_limit(tmp_pat
         assert session._standing_approval("KULR") == PREAPPROVAL_MAX
     finally:
         session.close()
+
+
+def test_a_lab_plan_narrows_the_setups_and_sets_the_stop_for_that_pick_only(tmp_path):
+    from tradesys.core.enums import SetupType
+
+    write_picks(tmp_path, [Pick("NVDA", priority=True, setups=("pullback",), stop_atr=4.0), Pick("KO")])
+    picks = read_picks(tmp_path)
+    profile = apply_picks(make_profile(), picks)
+
+    assert picks[0].setups == ("pullback",) and picks[0].stop_atr == 4.0
+    assert profile.entry_for("NVDA").setups == frozenset({SetupType.PULLBACK})
+    assert len(profile.entry_for("KO").setups) == len(SetupType)
+    assert profile.stop_multiple("NVDA") == 4.0
+    assert profile.stop_multiple("KO") == profile.stop_atr_multiple

@@ -56,12 +56,16 @@ POSITIVE = (
 )
 NEGATIVE = (
     "miss", "misses", "cut", "cuts", "downgrade", "lawsuit", "probe", "investigation",
-    "fraud", "recall", "bankruptcy", "offering", "dilution", "plunge", "slump", "falls",
+    "fraud", "recall", "bankruptcy", "dilution", "plunge", "slump", "falls",
+    *(f"{kind} offering" for kind in ("stock", "share", "public", "secondary", "equity", "direct")),
     "warning", "layoffs", "delist", "short seller", "sells", "sold", "decline",
 )
 RED_FLAGS = {
     "lawsuit": "תביעה", "probe": "חקירה", "investigation": "חקירה", "fraud": "הונאה",
-    "bankruptcy": "פשיטת רגל", "offering": "הנפקת מניות", "dilution": "דילול",
+    "bankruptcy": "פשיטת רגל", "dilution": "דילול",
+    # "offering" alone is also a product ("its AI offering"); only a share sale counts.
+    **{f"{kind} offering": "הנפקת מניות"
+       for kind in ("stock", "share", "public", "secondary", "equity", "direct")},
     "delist": "מחיקה מהמסחר", "short seller": "דוח שורט", "recall": "ריקול",
 }
 # Points off the blended score. A red flag or an overstretched chart is exactly
@@ -92,7 +96,7 @@ def _words(words: Sequence[str]) -> re.Pattern[str]:
 _POSITIVE, _NEGATIVE, _RED_FLAGS = _words(POSITIVE), _words(NEGATIVE), _words(RED_FLAGS)
 
 
-def _sentiment(text: str) -> int:
+def sentiment(text: str) -> int:
     lowered = text.lower()
     return len(_POSITIVE.findall(lowered)) - len(_NEGATIVE.findall(lowered))
 
@@ -113,12 +117,12 @@ def _grade(score: float) -> str:
     return "A" if score >= 75 else "B" if score >= 60 else "C"
 
 
-def _text(item: dict) -> str:
+def story_text(item: dict) -> str:
     return (item.get("headline", "") + " " + item.get("summary", "")).lower()
 
 
-def _red_flags(items: list[dict]) -> list[str]:
-    found = sorted(set(_RED_FLAGS.findall(" ".join(_text(n) for n in items))))
+def red_flags(items: list[dict]) -> list[str]:
+    found = sorted(set(_RED_FLAGS.findall(" ".join(story_text(n) for n in items))))
     return list(dict.fromkeys(RED_FLAGS[flag] for flag in found))
 
 
@@ -209,7 +213,7 @@ class TalentScout:
         relative = _percentiles({s: forms[s]["r6m"] - benchmark_6m for s in deep})
 
         stories = self._stories(deep)
-        news_raw = {s: sum(_sentiment(_text(n)) for n in items) for s, items in stories.items()}
+        news_raw = {s: sum(sentiment(story_text(n)) for n in items) for s, items in stories.items()}
         news_rank = _percentiles(news_raw)
 
         reports = []
@@ -254,8 +258,8 @@ class TalentScout:
         reports = []
         for symbol in exposed:
             items = stories[symbol]
-            tone = sum(_sentiment(_text(n)) for n in items)
-            if len(items) < LONG_SHOT_MIN_STORIES or tone < LONG_SHOT_MIN_TONE or _red_flags(items):
+            tone = sum(sentiment(story_text(n)) for n in items)
+            if len(items) < LONG_SHOT_MIN_STORIES or tone < LONG_SHOT_MIN_TONE or red_flags(items):
                 continue
             form, short = forms[symbol], shorts[symbol]
             report = ScoutReport(
@@ -309,7 +313,7 @@ class TalentScout:
         if not items:
             report.weaknesses.append("כמעט אין עליה חדשות השבוע, השוק לא מסתכל עליה")
             return 0.0
-        flags = _red_flags(items)
+        flags = red_flags(items)
         if flags:
             report.weaknesses.append(f"דגל אדום בחדשות: {', '.join(flags)}")
         if tone > 0:

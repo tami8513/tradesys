@@ -7,7 +7,9 @@ Manager like any other idea: minimum price, liquidity cap, position cap, stops.
 Each pick can also be marked:
   * priority: evaluated before the robot's own ideas, so it gets a free slot first;
   * ask first: when the robot wants to buy it, it asks the client instead of
-    buying, and the client approves or declines (see proposals.py).
+    buying, and the client approves or declines (see proposals.py);
+  * a plan from the strategy lab: which entry setups to wait for and how wide
+    the stop sits, fitted to this stock's last five years.
 """
 
 from __future__ import annotations
@@ -40,6 +42,8 @@ class Pick:
     # "ask first" pick is bought without asking, up to `max_amount` dollars.
     preapproved_on: str = ""
     max_amount: float | None = None
+    setups: tuple[str, ...] = ()          # empty: every setup
+    stop_atr: float | None = None         # None: the profile's stop distance
 
 
 def approval_day(now: datetime) -> date:
@@ -77,6 +81,8 @@ def _pick(raw) -> Pick:
         ask_first=bool(raw.get("ask_first", False)),
         preapproved_on=str(raw.get("preapproved_on", "")),
         max_amount=float(raw["max_amount"]) if raw.get("max_amount") else None,
+        setups=tuple(SetupType(s).value for s in raw.get("setups", ())),
+        stop_atr=float(raw["stop_atr"]) if raw.get("stop_atr") else None,
     )
 
 
@@ -106,13 +112,20 @@ def apply_picks(profile: ClientProfile, picks: list[Pick]) -> ClientProfile:
     """Add the picks to the watchlist and pin them so the Scout always looks."""
     if not picks:
         return profile
-    listed = {entry.symbol for entry in profile.watchlist}
+    planned = {p.symbol: frozenset(SetupType(s) for s in p.setups) for p in picks if p.setups}
+    watchlist = tuple(
+        replace(entry, setups=planned[entry.symbol]) if entry.symbol in planned else entry
+        for entry in profile.watchlist
+    )
+    listed = {entry.symbol for entry in watchlist}
     added = tuple(
-        WatchlistEntry(symbol=p.symbol, setups=PICK_SETUPS) for p in picks if p.symbol not in listed
+        WatchlistEntry(symbol=p.symbol, setups=planned.get(p.symbol, PICK_SETUPS))
+        for p in picks if p.symbol not in listed
     )
     return replace(
         profile,
-        watchlist=profile.watchlist + added,
+        watchlist=watchlist + added,
+        pick_stops=tuple((p.symbol, p.stop_atr) for p in picks if p.stop_atr),
         pinned_symbols=tuple(p.symbol for p in picks),
         priority_symbols=tuple(p.symbol for p in picks if p.priority),
         approval_symbols=tuple(p.symbol for p in picks if p.ask_first),
