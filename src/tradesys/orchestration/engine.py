@@ -63,6 +63,20 @@ def _within_budget(decision: RiskDecision, budget: float) -> RiskDecision:
     )
 
 
+def opening_noise(now: datetime) -> bool:
+    """The first quarter hour of the session, when the robot opens nothing new.
+
+    Quotes jump and spreads are wide right after the bell: every entry the
+    robot sent at 9:30-9:31 went unfilled and was cancelled. Exits and stops
+    are not affected; this only delays new entries.
+    """
+    from datetime import time
+    from zoneinfo import ZoneInfo
+
+    local = now.astimezone(ZoneInfo("America/New_York")).time()
+    return time(9, 30) <= local < time(9, 30 + OPENING_QUIET_MINUTES)
+
+
 def session_close(now: datetime) -> datetime:
     """16:00 New York on `now`'s trading day: when a proposal stops being valid."""
     from datetime import time
@@ -72,6 +86,7 @@ def session_close(now: datetime) -> datetime:
     day = now.astimezone(new_york).date()
     return datetime.combine(day, time(16, 0), new_york)
 CORRELATION_BARS = 61     # sixty daily returns
+OPENING_QUIET_MINUTES = 15
 
 
 def _monitor_events(report: MonitorReport) -> list[AgentEvent]:
@@ -343,6 +358,11 @@ class ClientSession:
             report.halt_reason = preflight.reason
             log.warning("cycle aborted: %s", preflight.reason)
             events.append(("risk", "halted", "", preflight.reason))
+            self.journal.log_events(events, report.started_at)
+            return report
+
+        if opening_noise(self.clock.now()):
+            events.append(("scout", "opening_wait", "", ""))
             self.journal.log_events(events, report.started_at)
             return report
 

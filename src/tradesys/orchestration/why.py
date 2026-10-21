@@ -183,6 +183,11 @@ def _entry(event: dict[str, Any]) -> WhyEntry | None:
         )
     if agent == "client" and kind == "declined":
         return WhyEntry(when, symbol, "דחית את ההצעה, והרובוט לא קנה", "neutral")
+    if agent == "scout" and kind == "opening_wait":
+        return WhyEntry(
+            when, "", "רבע השעה הראשונה של המסחר: המחירים קופצים, אז הרובוט ממתין "
+            "ולא נכנס לעסקאות חדשות. ההגנות על הפוזיציות פועלות כרגיל.", "neutral",
+        )
     if agent == "index" and kind in ("buy", "sell"):
         qty, _, rest = detail.partition("|")
         price, _, reason = rest.partition("|")

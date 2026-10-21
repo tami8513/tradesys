@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import pytest
@@ -279,3 +280,22 @@ def test_a_lab_plan_narrows_the_setups_and_sets_the_stop_for_that_pick_only(tmp_
     assert len(profile.entry_for("KO").setups) == len(SetupType)
     assert profile.stop_multiple("NVDA") == 4.0
     assert profile.stop_multiple("KO") == profile.stop_atr_multiple
+
+
+def test_no_new_entries_in_the_first_quarter_hour(tmp_path):
+    from tradesys.orchestration.engine import opening_noise
+
+    new_york = ZoneInfo("America/New_York")
+    assert opening_noise(datetime(2026, 10, 21, 9, 31, tzinfo=new_york))
+    assert not opening_noise(datetime(2026, 10, 21, 9, 45, tzinfo=new_york))
+    assert not opening_noise(datetime(2026, 10, 21, 9, 0, tzinfo=new_york))
+
+    session = demo_session(tmp_path, [Pick("RIVN")])
+    session.clock.set(datetime(2026, 10, 21, 9, 31, tzinfo=new_york))
+    try:
+        cycle = session.run_cycle()
+        assert cycle.candidates == 0 and cycle.submissions == 0
+        events = session.journal.agent_events(datetime(2026, 10, 21, tzinfo=timezone.utc))
+        assert ("scout", "opening_wait") in {(e["agent"], e["kind"]) for e in events}
+    finally:
+        session.close()

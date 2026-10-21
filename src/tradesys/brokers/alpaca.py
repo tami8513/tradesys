@@ -38,7 +38,9 @@ class AlpacaBroker:
         credentials: BrokerCredentials,
         *,
         timeout: float = 10.0,
-        fill_timeout: float = 20.0,
+        # Long enough for a paper fill in a busy minute; on 2026-10-20/21 four
+        # marketable entries went unfilled within 20s and were cancelled.
+        fill_timeout: float = 45.0,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._tenant = tenant
