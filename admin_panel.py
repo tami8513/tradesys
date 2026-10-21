@@ -303,10 +303,11 @@ def load_agent_report(client_ids: tuple[str, ...], days: int, bust: int) -> list
     from datetime import timedelta
 
     from app import get_session
+    from tradesys.backtest import load_result
     from tradesys.orchestration.agent_report import Book, ReportInput, build_report
 
     since = datetime.now(timezone.utc) - timedelta(days=days)
-    trades, events, statuses, books = [], [], [], []
+    trades, events, statuses, books, replays = [], [], [], [], []
     directives = memory = 0
     for client_id in client_ids:
         try:
@@ -324,6 +325,9 @@ def load_agent_report(client_ids: tuple[str, ...], days: int, bust: int) -> list
         statuses += journal.order_statuses()
         directives += len(journal.active_directives())
         memory += session.memory.count()
+        replay = load_result(session.tenant.data_dir.parent, client_id)
+        if replay:
+            replays.append((client_id, replay))
         books.append(
             Book(
                 client_id,
@@ -333,7 +337,7 @@ def load_agent_report(client_ids: tuple[str, ...], days: int, bust: int) -> list
                 [t.r_multiple() for t in history],
             )
         )
-    return build_report(ReportInput(trades, events, statuses, directives, memory, books))
+    return build_report(ReportInput(trades, events, statuses, directives, memory, books, replays))
 
 
 def render_agents(client_ids: tuple[str, ...], bust: int) -> None:

@@ -22,6 +22,7 @@ from tradesys.core.models import TradeRecord
 MIN_TRADES = 5
 # Joins a rejection's reasons in the event log. Not "; ": reasons contain it.
 REASON_SEP = " || "
+REPLAY_MIN_TRADES = 10    # fewer trades than this is noise, not a verdict on a setup
 GAP_THROUGH_STOP = 0.10
 CRASH = 0.30
 SIM_PATHS = 1000
@@ -71,6 +72,7 @@ class ReportInput:
     active_directives: int
     memory_records: int
     books: Sequence[Book] = ()
+    replays: Sequence[tuple[str, dict[str, Any]]] = ()   # (client_id, latest historical test)
 
 
 def build_report(data: ReportInput) -> list[AgentCard]:
@@ -84,6 +86,7 @@ def build_report(data: ReportInput) -> list[AgentCard]:
         _efficiency(data),
         _stress(data),
         _index(data),
+        _replay(data),
     ]
     return [_head(cards), *cards]
 
@@ -475,6 +478,45 @@ def _index(data: ReportInput) -> AgentCard:
         if event["kind"] == "failed":
             card.findings.append(f"{event['symbol']}: {event['detail']}")
     card.status = "bad" if kinds.get("failed") else "watch" if kinds.get("unfilled") else "good"
+    return card
+
+
+def _replay(data: ReportInput) -> AgentCard:
+    card = AgentCard(
+        "replay",
+        "סוכן הבדיקה ההיסטורית",
+        "מריץ את הרובוט עם ההגדרות של כל לקוח על 3 שנים של שוק אמיתי, ומראה אילו דרכי "
+        "כניסה ואילו מניות מרוויחות ואילו מפסידות.",
+    )
+    # A losing setup is a question, not a verdict: on 2026-10-21 dropping tal_dahan's
+    # losing pullbacks cut the replay from +16.5% to +10.8%, because the freed
+    # slots went to weaker trend trades.
+    losing_setups = False
+    for client_id, result in data.replays:
+        ret, bench = result["total_return_pct"], result["benchmark_return_pct"]
+        card.kpis.append((f"{client_id}: הרובוט מול המדד", f"{ret:+.1f}% / {bench:+.1f}%"))
+        for row in sorted(result["by_setup"], key=lambda r: r["pnl"]):
+            if row["trades"] >= REPLAY_MIN_TRADES and row["pnl"] < 0:
+                losing_setups = True
+                card.findings.append(
+                    f"{client_id}: כניסה ב{SETUP_NAMES.get(row['name'], row['name'])} הפסידה "
+                    f"${-row['pnl']:,.0f} ב-{row['trades']} עסקאות. לפני שמורידים אותה, להריץ בדיקה "
+                    "היסטורית בלעדיה: מקום פנוי בתיק מתמלא בעסקה אחרת, ולא תמיד טובה יותר."
+                )
+        worst = sorted((r for r in result["by_symbol"] if r["trades"] >= 3 and r["pnl"] < 0),
+                       key=lambda r: r["pnl"])
+        for row in worst[:2]:
+            card.findings.append(
+                f"{client_id}: {row['name']} הפסידה ${-row['pnl']:,.0f} ב-{row['trades']} עסקאות "
+                f"({row['win_rate']:.0%} הצלחה). כדאי לשקול להוציא אותה."
+            )
+        if ret < bench / 2:
+            card.findings.append(
+                f"{client_id}: הרובוט הרוויח {ret:+.1f}% מול {bench:+.1f}% למדד. רוב הכסף לא עובד; "
+                "רובוט המדדים יכול להחזיק את הכסף הפנוי."
+            )
+    if data.replays:
+        card.status = "watch" if losing_setups or card.findings else "good"
     return card
 
 

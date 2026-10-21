@@ -213,3 +213,31 @@ def test_ideas_are_repriced_at_the_live_trade_before_sizing(tmp_path):
         session.close()
     assert repriced.entry == 21.5
     assert repriced.stop == 18.0 and repriced.target == 26.0
+
+
+def test_the_historical_test_agent_reads_the_latest_replay():
+    replay = {
+        "total_return_pct": 16.5, "benchmark_return_pct": 76.8,
+        "by_setup": [
+            {"name": "trend_continuation", "trades": 127, "win_rate": 0.54, "avg_r": 0.27, "pnl": 20121.7},
+            {"name": "pullback", "trades": 37, "win_rate": 0.46, "avg_r": -0.07, "pnl": -2573.6},
+            {"name": "breakout", "trades": 2, "win_rate": 0.0, "avg_r": -1.0, "pnl": -1700.6},
+        ],
+        "by_symbol": [
+            {"name": "LCID", "trades": 9, "win_rate": 0.33, "avg_r": -0.55, "pnl": -4450.5},
+            {"name": "PLTR", "trades": 6, "win_rate": 0.83, "avg_r": 1.2, "pnl": 7265.0},
+        ],
+    }
+    cards = {c.key: c for c in build_report(ReportInput([], [], [], 0, 0, replays=[("tal_dahan", replay)]))}
+    card = cards["replay"]
+
+    assert card.status == "watch"
+    assert ("tal_dahan: הרובוט מול המדד", "+16.5% / +76.8%") in card.kpis
+    assert any("תיקון במגמה הפסידה $2,574 ב-37 עסקאות" in f and "בלעדיה" in f for f in card.findings)
+    assert not any("פריצה" in f for f in card.findings)          # 2 trades are noise
+    assert any("LCID הפסידה $4,450" in f for f in card.findings)
+    assert any("רובוט המדדים" in f for f in card.findings)
+
+
+def test_without_a_replay_the_agent_has_no_grade():
+    assert {c.key: c for c in build_report(ReportInput([], [], [], 0, 0))}["replay"].status == "no_data"
