@@ -153,6 +153,30 @@ class AlpacaMarketData:
 
         return bars[-limit:]
 
+    def daily_many(self, symbols: Sequence[str], limit: int) -> dict[str, list[Bar]]:
+        """The last `limit` daily bars of several symbols, in one paged request."""
+        now = self._now()
+        params: dict[str, object] = {
+            "symbols": ",".join(s.upper() for s in symbols),
+            "timeframe": "1Day",
+            "start": (now - timedelta(days=_lookback_days("1Day", limit))).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "feed": self._history_feed,
+            "adjustment": "split",
+            "limit": 10000,
+        }
+        if self._history_feed == "sip" and self._feed != "sip":
+            params["end"] = (now - timedelta(minutes=16)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        bars: dict[str, list[Bar]] = {}
+        while True:
+            payload = self._get("/v2/stocks/bars", params)
+            for symbol, items in (payload.get("bars") or {}).items():
+                bars.setdefault(symbol, []).extend(_parse_bar(item) for item in items)
+            token = payload.get("next_page_token")
+            if not token:
+                break
+            params = {**params, "page_token": token}
+        return {symbol: series[-limit:] for symbol, series in bars.items()}
+
     def last_price(self, symbol: str) -> float:
         payload = self._get(
             f"/v2/stocks/{symbol.upper()}/trades/latest", {"feed": self._feed}

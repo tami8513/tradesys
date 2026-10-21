@@ -163,3 +163,18 @@ def test_paper_tenant_uses_live_prices_with_platform_keys(tmp_path):
         assert system.market_data_source() == "alpaca:iex"
     finally:
         session.close()
+
+
+def test_daily_many_fetches_several_symbols_in_one_paged_request(monkeypatch):
+    calls = install(monkeypatch, [
+        {"bars": {"SPY": [bar(i, 100 + i) for i in range(3)], "QQQ": [bar(0, 50)]},
+         "next_page_token": "p2"},
+        {"bars": {"QQQ": [bar(1, 51), bar(2, 52)]}},
+    ])
+
+    bars = client().daily_many(["spy", "QQQ"], limit=2)
+
+    assert calls[0]["params"]["symbols"] == "SPY,QQQ"
+    assert calls[1]["params"]["page_token"] == "p2"
+    assert [b.close for b in bars["SPY"]] == [101, 102]
+    assert [b.close for b in bars["QQQ"]] == [51, 52]

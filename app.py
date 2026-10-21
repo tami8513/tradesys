@@ -247,6 +247,14 @@ CSS = f"""
   .ts-index-maybe, .ts-analyst-maybe {{ border-right-color: {PALETTE["gold"]}; }}
   .ts-index-wait, .ts-analyst-wait {{ border-right-color: {PALETTE["warning"]}; }}
   .ts-index-avoid, .ts-analyst-avoid {{ border-right-color: {PALETTE["negative"]}; }}
+  .ts-indices-big {{ grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }}
+  .ts-indices-small {{ grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }}
+  .ts-index-big .ts-index-price {{ font-size: 22px; }}
+  .ts-index-small {{ padding: 7px 10px; }}
+  .ts-index-small .ts-index-price {{ font-size: 14px; }}
+  .ts-spark {{ width: 100%; height: 36px; display: block; margin: 4px 0 6px; }}
+  .st-key-board_head div[data-testid="stHorizontalBlock"] {{ direction: rtl; flex-direction: row;
+      align-items: center; }}
   .ts-index-name {{ font-size: 12px; color: {PALETTE["muted"]}; font-weight: 700; }}
   .ts-index-price {{ font-size: 17px; font-weight: 800; margin: 2px 0; }}
   .ts-index-verdict {{ font-size: 12px; line-height: 1.45; }}
@@ -1023,19 +1031,127 @@ def load_benchmark(client_id: str, started_on: str, bust: int) -> float | None:
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def load_quotes(client_id: str, bust: int) -> list[tuple[str, float, float]]:
-    """(symbol, last close, change % vs the previous close) for the watchlist."""
+@st.cache_resource(ttl=300, show_spinner=False)
+def load_index_quotes(client_id: str, bust: int) -> dict:
+    from tradesys.data.index_board import NAMES, quotes_from_bars
+
     del bust
-    session = get_session(client_id)
-    quotes = []
-    for symbol in session.profile.symbols:
-        try:
-            bars = session.market_data.history(symbol, timeframe="1Day", limit=2)
-        except Exception:  # one symbol's outage must not blank the strip
+    market = get_session(client_id).market_data
+    if hasattr(market, "daily_many"):
+        bars = market.daily_many(list(NAMES), 65)
+    else:
+        bars = {symbol: market.history(symbol, timeframe="1Day", limit=65) for symbol in NAMES}
+    return quotes_from_bars(bars)
+
+
+def sparkline(closes: list[float], rising: bool) -> str:
+    low, high = min(closes), max(closes)
+    span = (high - low) or 1.0
+    width, height = 140, 36
+    points = " ".join(
+        f"{i / (len(closes) - 1) * width:.1f},{height - (c - low) / span * height:.1f}"
+        for i, c in enumerate(closes)
+    )
+    colour = PALETTE["positive"] if rising else PALETTE["negative"]
+    return (
+        f'<svg class="ts-spark" viewBox="0 0 {width} {height}" preserveAspectRatio="none">'
+        f'<polyline points="{points}" fill="none" stroke="{colour}" stroke-width="1.6"/></svg>'
+    )
+
+
+def index_card(quote, name: str, reading=None) -> str:
+    tone = "ts-up" if quote.change_pct >= 0 else "ts-down"
+    head = (
+        f'<div class="ts-index-name">{esc(name)} <span dir="ltr">{esc(quote.symbol)}</span></div>'
+        f'<div class="ts-index-price">{ltr(money(quote.price))} '
+        f'<span class="{tone}">{ltr(f"{quote.change_pct:+.2f}%")}</span></div>'
+    )
+    if reading is None:
+        return f'<div class="ts-index ts-index-small">{head}</div>'
+    rising = quote.closes[-1] >= quote.closes[0]
+    return (
+        f'<div class="ts-index ts-index-big ts-index-{reading.action}">{head}'
+        f"{sparkline(quote.closes, rising)}"
+        f'<div class="ts-index-verdict">{ACTION_ICONS[reading.action]} {esc(reading.headline)}</div></div>'
+    )
+
+
+def board_settings_popover(client_id: str, board, demo: bool) -> None:
+    from tradesys.data.index_board import GROUPS, MAX_FEATURED, NAMES, clean, write_board
+
+    def label(symbol: str) -> str:
+        return f"{NAMES[symbol]} ({symbol})"
+
+    with st.popover("⚙️ התאם את הלוח", width="stretch"):
+        featured = st.multiselect(
+            f"מדדים בגדול (עד {MAX_FEATURED}), לפי הסדר שבו תבחר",
+            list(NAMES), default=list(board.featured), format_func=label,
+            max_selections=MAX_FEATURED, key=f"board_featured_{client_id}", placeholder="בחר…",
+        )
+        hidden = st.multiselect(
+            "להסתיר", [s for s in NAMES if s not in featured],
+            default=[s for s in board.hidden if s not in featured], format_func=label,
+            key=f"board_hidden_{client_id}", placeholder="בחר…",
+        )
+        groups = st.multiselect(
+            "קבוצות להצגה, לפי הסדר", list(GROUPS), default=list(board.groups),
+            key=f"board_groups_{client_id}", placeholder="בחר…",
+        )
+        st.caption("כדי להזיז מדד למקום אחר: הסר אותו ובחר אותו שוב. הוא יעבור לסוף.")
+        if st.button("שמור", key=f"board_save_{client_id}", width="stretch"):
+            chosen = clean(featured, hidden, groups)
+            if demo:
+                st.session_state["demo_board"] = chosen
+            else:
+                write_board(tenant_dir(client_id), chosen)
+            st.rerun()
+
+
+def index_board(client_id: str, session) -> None:
+    """The leading indices large, the rest small and grouped, as the client arranged them."""
+    from tradesys.data.index_board import NAMES, read_board
+
+    demo = client_id == DEMO_CLIENT_ID
+    board = st.session_state.get("demo_board") if demo else None
+    board = board or read_board(session.tenant.data_dir)
+    bust = st.session_state.get("_bust", 0)
+    try:
+        quotes = load_index_quotes(client_id, bust)
+    except Exception:  # the board is a view; a data outage must not break the home tab
+        st.caption("המדדים לא זמינים כרגע.")
+        return
+
+    title_col, settings_col = st.container(key="board_head").columns([3, 2])
+    title_col.markdown(
+        '<div class="ts-section">המדדים · מתעדכן בהשהיה של 15 דקות</div>', unsafe_allow_html=True
+    )
+    with settings_col:
+        board_settings_popover(client_id, board, demo)
+
+    big = []
+    for symbol in board.featured:
+        if symbol not in quotes:
             continue
-        if len(bars) == 2 and bars[0].close:
-            quotes.append((symbol, bars[1].close, (bars[1].close / bars[0].close - 1) * 100))
-    return quotes
+        try:
+            reading = analyst_reading(client_id, symbol, bust)
+        except Exception:  # the verdict is extra; the price still shows
+            reading = None
+        big.append(index_card(quotes[symbol], NAMES[symbol], reading) if reading
+                   else index_card(quotes[symbol], NAMES[symbol]))
+    if big:
+        st.markdown(f'<div class="ts-indices ts-indices-big">{"".join(big)}</div>',
+                    unsafe_allow_html=True)
+
+    shown = [g for g in board.groups if any(s in quotes for s in board.small(g))]
+    if not shown:
+        return
+    group = st.segmented_control(
+        "קבוצה", shown, default=shown[0], key=f"board_group_{client_id}",
+        label_visibility="collapsed",
+    ) or shown[0]
+    small = [index_card(quotes[s], NAMES[s]) for s in board.small(group) if s in quotes]
+    st.markdown(f'<div class="ts-indices ts-indices-small">{"".join(small)}</div>',
+                unsafe_allow_html=True)
 
 
 AGENT_ROOM = (
@@ -1164,15 +1280,7 @@ def tab_home(client_id: str, snapshot: dict, session) -> None:
         unsafe_allow_html=True,
     )
 
-    quotes = load_quotes(client_id, bust)
-    if quotes:
-        chips = "".join(
-            f'<span class="ts-chip"><b>{esc(sym)}</b> {last:,.2f} '
-            f'<span style="color:{PALETTE["positive"] if chg >= 0 else PALETTE["negative"]}">'
-            f"{chg:+.2f}%</span></span>"
-            for sym, last, chg in quotes
-        )
-        st.markdown(f'<div class="ts-chips">{chips}</div>', unsafe_allow_html=True)
+    index_board(client_id, session)
 
     # Keyed so the CSS can order these columns right-to-left on wide screens;
     # on a phone they stack with the vault first.
