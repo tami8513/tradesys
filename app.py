@@ -2651,6 +2651,27 @@ def tab_scout(client_id: str, session, armed: bool) -> None:
     locked_hint(armed)
 
 
+def morning_banner(client_id: str, session, armed: bool) -> None:
+    """The morning questions, answerable here as well as from the phone."""
+    from tradesys.orchestration.morning import CHOICES, answer, pending
+
+    for question in pending(session.tenant.data_dir):
+        lines = "".join(f"<div>{esc(line)}</div>" for line in question["text"].splitlines())
+        chosen = question["answer"]
+        status = (f'<div class="ts-agent-text">בחרת: {esc(CHOICES[chosen])}. יבוצע בפתיחת המסחר.</div>'
+                  if chosen else "")
+        st.markdown(
+            f'<div class="ts-brief" style="border-right-color:{PALETTE["gold"]}">'
+            f'<div class="ts-brief-title">☀️ שאלת הבוקר של הרובוט</div>{lines}{status}</div>',
+            unsafe_allow_html=True,
+        )
+        for (key, label), col in zip(CHOICES.items(), st.columns(len(CHOICES)), strict=True):
+            if col.button(label, disabled=not armed or key == chosen, width="stretch",
+                          key=f"morning_{question['id']}_{key}"):
+                answer(session.tenant.data_dir, question["id"], key)
+                st.rerun()
+
+
 def proposals_banner(client_id: str, session, armed: bool) -> None:
     """The robot's requests to buy an "ask first" pick, with approve and decline."""
     from tradesys.clients.proposals import pending
@@ -3242,6 +3263,7 @@ def client_portal(client_id: str, demo: bool = False) -> None:
         )
 
     proposals_banner(client_id, session, armed)
+    morning_banner(client_id, session, armed)
 
     tabs = st.tabs(
         [

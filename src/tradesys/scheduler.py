@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from tradesys.clients.automation import automation_enabled, lifecycle_active
 from tradesys.clients.picks import approval_day
@@ -24,7 +26,10 @@ from tradesys.core.config import Settings
 from tradesys.core.logging import configure
 from tradesys.data.market_clock import MarketClock, market_clock
 from tradesys.orchestration.engine import TradingSystem
+from tradesys.orchestration.morning import CHOICES, answer, ask, asked_on
 from tradesys.orchestration.scouting import scout_due, scout_market
+from tradesys.orchestration.telegram import TelegramBot, poll_forever
+from tradesys.orchestration.trade_feed import new_messages
 from tradesys.orchestration.watchdog import (
     AlertBook,
     Notifier,
@@ -37,6 +42,10 @@ from tradesys.orchestration.watchdog import (
 log = logging.getLogger("tradesys.scheduler")
 
 IDLE_RECHECK_SECONDS = 30 * 60
+# The morning question goes out in the last 70 minutes before the bell; with an
+# idle recheck every 30 minutes at least two checks always fall inside it.
+MORNING_WINDOW_SECONDS = 70 * 60
+NEW_YORK = ZoneInfo("America/New_York")
 
 
 def due_tenants(system: TradingSystem) -> list[str]:
@@ -67,14 +76,65 @@ def run_once(system: TradingSystem) -> dict[str, str]:
     return outcomes
 
 
+def asset_names(settings: Settings):
+    """Company names for messages; a missing listing just leaves the ticker alone."""
+    from tradesys.data.asset_search import AssetDirectory
+    from tradesys.data.scouting_feeds import alpaca_assets
+
+    directory = AssetDirectory(
+        settings.data_dir / "_platform",
+        alpaca_assets(settings.market_data_key_id, settings.market_data_secret_key),
+    )
+
+    def name(symbol: str) -> str | None:
+        try:
+            return directory.name(symbol)
+        except Exception:  # a name is decoration; the message goes out without it
+            return None
+
+    return name
+
+
+def ask_morning(session, notifier: Notifier, names) -> None:
+    """Once a trading day, before the bell: ask about positions worth a decision."""
+    today = datetime.now(NEW_YORK).date()
+    if asked_on(session.tenant.data_dir) == today.isoformat():
+        return
+    trades = session.journal.open_trades()
+    prices = {}
+    for trade in trades:
+        try:
+            prices[trade.symbol] = session.market_data.last_price(trade.symbol)
+        except Exception:  # an unpriced position is simply not asked about today
+            continue
+    for question in ask(session.tenant.data_dir, today, trades, prices, names):
+        buttons = [[(label, f"m|{session.client_id}|{question['id']}|{key}")]
+                   for key, label in CHOICES.items()]
+        if isinstance(notifier, TelegramBot):
+            notifier.send(question["text"], buttons)
+        else:
+            notifier.send(question["text"])
+
+
+def answer_button(system: TradingSystem, data: str) -> str | None:
+    """A morning-question button: "m|client_id|question_id|choice"."""
+    parts = data.split("|")
+    if len(parts) != 4 or parts[0] != "m" or parts[1] not in system.registry.list_ids():
+        return None
+    return answer(system.tenant(parts[1]).data_dir, parts[2], parts[3])
+
+
 def watch(
     system: TradingSystem,
     book: AlertBook,
     notifier: Notifier,
     outcomes: dict[str, str] | None = None,
+    *,
+    morning: bool = False,
 ) -> None:
-    """Inspect every due tenant and send what is new, still open, or resolved."""
+    """Every due tenant: alerts, a message per buy and sale, and the morning question."""
     now = datetime.now(timezone.utc)
+    names = asset_names(system.settings)
     for client_id in due_tenants(system):
         session = None
         try:
@@ -85,6 +145,10 @@ def watch(
                 alerts.append(failure)
             for message in book.update(client_id, alerts, now):
                 notifier.send(message)
+            for message in new_messages(session.journal, session.tenant.data_dir, now, names):
+                notifier.send(message)
+            if morning:
+                ask_morning(session, notifier, names)
         except Exception:
             # The watchdog must never take the trading loop down with it.
             log.exception("watchdog failed for %s", client_id)
@@ -121,6 +185,13 @@ def run_forever(
         greet_once(notifier, system.settings.data_dir / "_platform" / "telegram_greeted.json")
     except Exception:  # a phone channel being down must never stop trading
         log.exception("could not send the alerts greeting")
+    if isinstance(notifier, TelegramBot):
+        threading.Thread(
+            target=poll_forever,
+            args=(notifier, lambda data: answer_button(system, data), lambda: False),
+            name="telegram-buttons",
+            daemon=True,
+        ).start()
     while True:
         try:
             status = clock.status()
@@ -128,9 +199,9 @@ def run_forever(
                 watch(system, book, notifier, run_once(system))
                 time.sleep(cycle_minutes * 60)
                 continue
-            watch(system, book, notifier)
-            scout_overnight(system.settings)
             wait = seconds_until(status.next_open, datetime.now(timezone.utc))
+            watch(system, book, notifier, morning=wait <= MORNING_WINDOW_SECONDS)
+            scout_overnight(system.settings)
             log.info(
                 "market closed (%s); next open %s; sleeping %.0f min",
                 status.source,

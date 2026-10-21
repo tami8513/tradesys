@@ -24,6 +24,7 @@ from typing import Iterable, Protocol
 from tradesys.clients.index_sleeve import read_ledger
 from tradesys.clients.proposals import pending
 from tradesys.orchestration.index_desk import book_account
+from tradesys.orchestration.telegram import TelegramBot
 from tradesys.core.fileio import locked, write_json_atomic
 
 log = logging.getLogger("tradesys.watchdog")
@@ -164,17 +165,6 @@ class Notifier(Protocol):
     def send(self, text: str) -> None: ...
 
 
-class TelegramNotifier:
-    def __init__(self, token: str, chat_id: str) -> None:
-        self._url = f"https://api.telegram.org/bot{token}/sendMessage"
-        self._chat_id = chat_id
-
-    def send(self, text: str) -> None:
-        import httpx
-
-        httpx.post(self._url, json={"chat_id": self._chat_id, "text": text}, timeout=10)
-
-
 class LogNotifier:
     """No channel configured: the alert still reaches the server log and the admin."""
 
@@ -194,4 +184,4 @@ def greet_once(notifier: Notifier, flag: Path) -> None:
 def notifier_from_env() -> Notifier:
     token = os.getenv("TRADESYS_TELEGRAM__BOT_TOKEN", "")
     chat_id = os.getenv("TRADESYS_TELEGRAM__CHAT_ID", "")
-    return TelegramNotifier(token, chat_id) if token and chat_id else LogNotifier()
+    return TelegramBot(token, chat_id) if token and chat_id else LogNotifier()

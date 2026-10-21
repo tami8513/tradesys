@@ -39,6 +39,7 @@ from tradesys.memory.directives import DirectiveExtractor
 from tradesys.memory.store import LocalVectorMemory, VectorMemory
 from tradesys.orchestration.agent_report import REASON_SEP
 from tradesys.orchestration.index_desk import book_account, reserved_symbols, run_index_robot
+from tradesys.orchestration.morning import carry_out
 from tradesys.orchestration.why import explain_reason
 from tradesys.persistence.journal import Journal
 
@@ -349,8 +350,11 @@ class ClientSession:
 
         # Manage existing risk before taking on any more: an exit here frees a
         # position slot and books P&L that the risk checks below will see.
+        # The client's morning answers first: a profit they asked to take is taken
+        # at the open, before the sweep could act on the same position.
+        decided = carry_out(self)
         report.monitor = self.monitor.check_once()
-        events = _monitor_events(report.monitor)
+        events = decided + _monitor_events(report.monitor)
 
         # The main robot's checks see the account without the index robot's
         # holdings moving, which have no stops and are not its to protect.

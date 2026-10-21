@@ -186,6 +186,11 @@ def _entry(event: dict[str, Any]) -> WhyEntry | None:
         return WhyEntry(
             when, symbol, f"נקנה לפי האישור המראש שלך ({detail} מניות), בלי לשאול שוב", "positive"
         )
+    if agent == "client" and kind == "let_run":
+        return WhyEntry(when, symbol, "ביקשת לתת למניה לרוץ: היעד הוסר, וההגנה הנגררת ממשיכה לשמור",
+                        "positive")
+    if agent == "client" and kind == "take_profit":
+        return WhyEntry(when, symbol, "ביקשת לממש את הרווח, והרובוט מכר בפתיחת המסחר", "positive")
     if agent == "client" and kind == "declined":
         return WhyEntry(when, symbol, "דחית את ההצעה, והרובוט לא קנה", "neutral")
     if agent == "scout" and kind == "opening_wait":
