@@ -247,6 +247,10 @@ CSS = f"""
   .ts-index-maybe, .ts-analyst-maybe {{ border-right-color: {PALETTE["gold"]}; }}
   .ts-index-wait, .ts-analyst-wait {{ border-right-color: {PALETTE["warning"]}; }}
   .ts-index-avoid, .ts-analyst-avoid {{ border-right-color: {PALETTE["negative"]}; }}
+  .ts-research {{ width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 12px; }}
+  .ts-research th, .ts-research td {{ padding: 4px 6px; border-bottom: 1px solid {PALETTE["border"]};
+      text-align: right; }}
+  .ts-research th {{ color: {PALETTE["muted"]}; font-weight: 600; }}
   .ts-indices-big {{ grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }}
   .ts-indices-small {{ grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }}
   .ts-index-big .ts-index-price {{ font-size: 22px; }}
@@ -606,16 +610,21 @@ def load_snapshot(client_id: str, bust: int) -> dict:
     journal = session.journal
     profile = session.profile
 
+    from tradesys.orchestration.index_desk import book_account
+
     account = session.broker.account()
+    # Day P&L, drawdown and the floor are tracked on the main robot's book,
+    # which leaves out the index robot's profit or loss.
+    book = book_account(session)
     positions = session.broker.positions()
     stats = journal.day_stats(trading_day(session.clock))
     day_start = journal.day_start_equity()
     halted, halt_reason = journal.halt_state()
 
     unrealized = sum(p.unrealized_pnl for p in positions)
-    day_pnl = account.equity - day_start if day_start > 0 else None
+    day_pnl = book.equity - day_start if day_start > 0 else None
     drawdown_pct = (
-        max(stats.peak_equity - account.equity, 0.0) / stats.peak_equity * 100
+        max(stats.peak_equity - book.equity, 0.0) / stats.peak_equity * 100
         if stats.peak_equity > 0
         else 0.0
     )
@@ -696,7 +705,7 @@ def load_snapshot(client_id: str, bust: int) -> dict:
         "trades_today": stats.trades_opened,
         "drawdown_pct": drawdown_pct,
         "cumulative_realized": sum(t.realized_pnl or 0.0 for t in closed),
-        "floor": _floor_dict(session.risk.floor_state(account, stats)),
+        "floor": _floor_dict(session.risk.floor_state(book, stats)),
         "capital_base": journal.capital_base(),
         "started_on": journal.started_on(),
         "peak_equity": stats.peak_equity,
@@ -1161,6 +1170,7 @@ AGENT_ROOM = (
     ("execution", "סוכן ביצוע"),
     ("monitor", "סוכן יציאה"),
     ("reflection", "סוכן למידה"),
+    ("index", "רובוט המדדים"),
 )
 
 
@@ -1701,7 +1711,9 @@ def tab_agents(snapshot: dict, session, armed: bool) -> None:
     if st.button("סרוק הזדמנויות"):
         try:
             with st.spinner("סורק את רשימת המעקב…"):
-                account = session.broker.account()
+                from tradesys.orchestration.index_desk import book_account
+
+                account = book_account(session)
                 positions = session.broker.positions()
                 stats = session.journal.day_stats(trading_day(session.clock))
                 verdicts = [
@@ -2496,6 +2508,126 @@ def autopilot_status(session) -> None:
     )
 
 
+# What the ten-year replay of the index robot's own rules found (2017-04 to 2026-10).
+INDEX_RESEARCH = (
+    ("S&P 500 + נאסד\"ק", "16.6% · ‎-31%", "16.6% · ‎-31%", "16.2% · ‎-31%"),
+    ("נאסד\"ק 100", "19.4% · ‎-36%", "19.4% · ‎-36%", "19.7% · ‎-29%"),
+    ("S&P 500", "13.2% · ‎-34%", "13.2% · ‎-34%", "11.4% · ‎-34%"),
+    ("ארבעת המדדים", "13.4% · ‎-34%", "13.4% · ‎-34%", "11.8% · ‎-34%"),
+)
+
+
+def index_robot_panel(client_id: str, session, armed: bool) -> None:
+    """The index robot: a smart holder of index funds, with its own budget and book."""
+    from datetime import timedelta
+
+    from tradesys.agents.index_robot import INDEX_NAMES
+    from tradesys.clients.index_sleeve import (
+        INDEX_CHOICES,
+        clean_settings,
+        read_ledger,
+        read_settings,
+        write_settings,
+    )
+    from tradesys.orchestration.why import timeline
+
+    data_dir = session.tenant.data_dir
+    settings, ledger = read_settings(data_dir), read_ledger(data_dir)
+    st.markdown("###### 📈 רובוט המדדים · מחזיק חכם")
+    st.caption(
+        "רובוט נפרד שמחזיק קרנות מדד (נאסד\"ק, S&P 500, דאו, ראסל) כהשקעה ארוכה, מתקציב שאתה קובע. "
+        "כסף חדש הוא מכניס בבת אחת כשיש ירידה או פריצה, ואחרת בשלישים, כמה ימים בין שליש לשליש. "
+        "הוא לא מוכר כי מחיר עלה. הוא מחליט פעם ביום, שעה לפני סגירת המסחר."
+    )
+    rows = "".join(
+        f"<tr><td>{esc(name)}</td><td>{ltr(hold)}</td><td>{ltr(robot)}</td><td>{ltr(insured)}</td></tr>"
+        for name, hold, robot, insured in INDEX_RESEARCH
+    )
+    st.markdown(
+        '<div class="ts-brief"><div class="ts-brief-title">📚 מה הבדיקה ההיסטורית מצאה · 2017-2026</div>'
+        "<div>תשואה ממוצעת לשנה · הנפילה הכי עמוקה מהשיא</div>"
+        '<table class="ts-research"><tr><th></th><th>פשוט להחזיק</th><th>הרובוט</th>'
+        f"<th>הרובוט + ביטוח</th></tr>{rows}</table>"
+        '<div class="ts-agent-text">אף שיטת תזמון שבדקנו לא ניצחה החזקה פשוטה של המדד, ולכן הרובוט '
+        "לא מנסה להיות חכם מהמדד: הוא מחזיק אותו. ביטוח שוק דובי עלה בעשור הזה עד 2 אחוז בשנה, "
+        "ובנאסד\"ק הקטין את הנפילה הכי עמוקה מ-36% ל-29%. הוא נועד לשוק דובי ארוך כמו ב-2008, "
+        "שלא היה בעשור הזה.</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    if ledger.holdings or ledger.parked:
+        prices = {p.symbol.upper(): p.market_price for p in session.broker.positions()}
+        table = []
+        for symbol in sorted(set(ledger.holdings) | set(ledger.parked)):
+            holding = ledger.holdings.get(symbol)
+            value = holding.qty * prices.get(symbol, 0.0) if holding else 0.0
+            table.append({
+                "מדד": f"{INDEX_NAMES.get(symbol, symbol)} ({symbol})",
+                "יחידות": holding.qty if holding else 0,
+                "שווי": value,
+                "הושקע": ledger.contributed.get(symbol, 0.0),
+                "מזומן בהמתנה": ledger.parked.get(symbol, 0.0),
+                "מצב": "🛡 ביטוח: מחזיק חצי" if symbol in ledger.insured else "מחזיק",
+            })
+        st.dataframe(
+            pd.DataFrame(table),
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "שווי": st.column_config.NumberColumn(format="$%,.0f"),
+                "הושקע": st.column_config.NumberColumn(format="$%,.0f"),
+                "מזומן בהמתנה": st.column_config.NumberColumn(format="$%,.0f"),
+            },
+        )
+        profit = ledger.profit(prices)
+        tone = "ts-up" if profit >= 0 else "ts-down"
+        st.markdown(
+            f'רווח רובוט המדדים עד עכשיו: <span class="{tone}">{ltr(signed(profit))}</span> '
+            "· הרווח וההפסד שלו לא נספרים במגבלות של הרובוט הראשי.",
+            unsafe_allow_html=True,
+        )
+
+    with st.form(key=f"index_robot_{client_id}"):
+        acknowledged = st.checkbox(
+            "אני מבין שרובוט המדדים מחזיק בלי סטופ ולא מוגן ברצפת ההון: במשבר הוא יכול לרדת 30% "
+            "ויותר, בדיוק כמו המדד עצמו.",
+            value=settings.acknowledged, disabled=not armed,
+        )
+        enabled = st.toggle("רובוט המדדים פעיל", value=settings.enabled, disabled=not armed)
+        budget = st.number_input(
+            "תקציב לרובוט המדדים ($)", min_value=0.0, value=float(settings.budget), step=1000.0,
+            disabled=not armed,
+        )
+        indices = st.multiselect(
+            "באילו מדדים להחזיק (התקציב מתחלק שווה ביניהם)", list(INDEX_CHOICES),
+            default=list(settings.indices),
+            format_func=lambda s: f"{INDEX_NAMES[s]} ({s})", disabled=not armed, placeholder="בחר…",
+        )
+        insurance = st.toggle(
+            "🛡 ביטוח שוק דובי: במגמת ירידה ארוכה להחזיק רק חצי, ולהחזיר כשהמגמה מתהפכת",
+            value=settings.bear_insurance, disabled=not armed,
+        )
+        if st.form_submit_button("שמור", disabled=not armed, width="stretch"):
+            chosen = clean_settings(enabled, budget, indices, insurance, acknowledged)
+            if enabled and not chosen.enabled:
+                st.error("כדי להפעיל צריך לסמן את ההסכמה ולבחור לפחות מדד אחד.")
+            else:
+                write_settings(data_dir, chosen)
+                invalidate()
+                st.rerun()
+    st.caption(
+        "כיבוי הרובוט מקפיא אותו: הוא שומר מה שקנה ולא קונה או מוכר. מדד שתסיר מהרשימה יימכר. "
+        "הורדת תקציב מוכרת את ההפרש."
+    )
+    locked_hint(armed)
+
+    since = datetime.now(timezone.utc) - timedelta(days=60)
+    events = [e for e in session.journal.agent_events(since) if e["agent"] == "index"]
+    if events:
+        st.markdown("###### מה רובוט המדדים עשה")
+        render_why(timeline(events), limit=15)
+
+
 def tab_protection(client_id: str, snapshot: dict, session, armed: bool) -> None:
     """שליטה וסיכון: טייס אוטומטי או הגדרות הלקוח, הקצאה, מד סיכון ורצפה."""
     if control_panel(client_id, snapshot, session, armed) == "auto":
@@ -2503,6 +2635,8 @@ def tab_protection(client_id: str, snapshot: dict, session, armed: bool) -> None
     else:
         risk_meter(client_id, snapshot, session, armed)
     floor_status(snapshot)
+    st.divider()
+    index_robot_panel(client_id, session, armed)
 
 
 def risk_meter(client_id: str, snapshot: dict, session, armed: bool) -> None:

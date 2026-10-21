@@ -82,3 +82,19 @@ def test_latest_by_agent_keeps_only_each_agents_newest_line():
     latest = latest_by_agent(events)
     assert latest["risk"].symbol == "KULR" and latest["risk"].tone == "negative"
     assert set(latest) == {"risk", "scout"}
+
+
+def test_the_index_robot_explains_itself():
+    from tradesys.orchestration.why import timeline
+
+    events = [
+        {"agent": "index", "kind": "buy", "symbol": "QQQ", "created_at": "2026-10-21T19:10:00+00:00",
+         "detail": "12|612.40|כניסה הדרגתית ל-נאסד\"ק 100: עוד שליש"},
+        {"agent": "index", "kind": "sell", "symbol": "SPY", "created_at": "2026-10-21T19:11:00+00:00",
+         "detail": "5|700.00|ביטוח שוק דובי"},
+    ]
+    [sold, bought] = timeline(events)
+
+    assert bought.text == "רובוט המדדים קנה 12 יחידות ב-$612.40: כניסה הדרגתית ל-נאסד\"ק 100: עוד שליש"
+    assert bought.tone == "positive"
+    assert sold.text.startswith("רובוט המדדים מכר 5 יחידות ב-$700.00")

@@ -82,6 +82,7 @@ def build_report(data: ReportInput) -> list[AgentCard]:
         _learning(data),
         _efficiency(data),
         _stress(data),
+        _index(data),
     ]
     return [_head(cards), *cards]
 
@@ -449,6 +450,30 @@ def _stress(data: ReportInput) -> AgentCard:
         if rank in statuses:
             card.status = rank
             break
+    return card
+
+
+def _index(data: ReportInput) -> AgentCard:
+    card = AgentCard(
+        "index",
+        "רובוט המדדים",
+        "מחזיק קרנות מדד כהשקעה ארוכה מתקציב נפרד, בלי סטופ. כסף חדש נכנס בירידות או בשלישים, "
+        "ובביטוח שוק דובי הוא מחזיק חצי במגמת ירידה ארוכה. הספרים שלו נפרדים מהרובוט הראשי.",
+    )
+    events = _events(data, "index")
+    if not events:
+        return card
+    kinds = Counter(e["kind"] for e in events)
+    card.kpis += [
+        ("קניות", str(kinds.get("buy", 0))),
+        ("מכירות", str(kinds.get("sell", 0))),
+        ("לא בוצעו", str(kinds.get("unfilled", 0))),
+        ("תקלות", str(kinds.get("failed", 0))),
+    ]
+    for event in events:
+        if event["kind"] == "failed":
+            card.findings.append(f"{event['symbol']}: {event['detail']}")
+    card.status = "bad" if kinds.get("failed") else "watch" if kinds.get("unfilled") else "good"
     return card
 
 

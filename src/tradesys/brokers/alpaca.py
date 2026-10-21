@@ -105,8 +105,7 @@ class AlpacaBroker:
             for item in payload
         ]
 
-    def submit(self, order: OrderRequest) -> OrderResult:
-        self._tenant.assert_owns(order)
+    def _order_body(self, order: OrderRequest) -> dict[str, Any]:
         body: dict[str, Any] = {
             "symbol": order.symbol,
             "qty": str(order.qty),
@@ -133,8 +132,11 @@ class AlpacaBroker:
             body["stop_loss"] = {"stop_price": f"{order.stop_loss:.2f}"}
             if order.take_profit is not None:
                 body["take_profit"] = {"limit_price": f"{order.take_profit:.2f}"}
+        return body
 
-        payload = self._request("POST", "/v2/orders", body)
+    def submit(self, order: OrderRequest) -> OrderResult:
+        self._tenant.assert_owns(order)
+        payload = self._request("POST", "/v2/orders", self._order_body(order))
         payload = self._await_final(payload)
         if payload.get("status") not in _FINAL_STATES:
             # The journal opens a trade only on a fill it saw. An entry still working
@@ -146,6 +148,24 @@ class AlpacaBroker:
             # A partial fill on a pulled entry is not journaled either, so the shares
             # it bought are sold straight back rather than left unmanaged.
             self._request("DELETE", f"/v2/positions/{order.symbol.upper()}", missing_ok=True)
+        return _parse_order(self.client_id, payload)
+
+    def trade(self, order: OrderRequest) -> OrderResult:
+        """A plain order that keeps whatever fills, for the index robot.
+
+        Unlike an entry, a partial fill here is not an unmanaged position: the
+        index robot books exactly the filled quantity. So the unfilled rest is
+        cancelled and nothing is sold back. Selling the position, as `submit`
+        does, would also sell the index robot's earlier shares.
+        """
+        self._tenant.assert_owns(order)
+        if order.stop_loss is not None:
+            raise BrokerError("trade() places plain orders; entries with a stop use submit()")
+        payload = self._request("POST", "/v2/orders", self._order_body(order))
+        payload = self._await_final(payload)
+        if payload.get("status") not in _FINAL_STATES:
+            self._request("DELETE", f"/v2/orders/{payload['id']}", missing_ok=True)
+            payload = self._request("GET", f"/v2/orders/{payload['id']}")
         return _parse_order(self.client_id, payload)
 
     def resting_stop(self, symbol: str) -> float | None:

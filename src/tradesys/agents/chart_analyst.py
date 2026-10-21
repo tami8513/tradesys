@@ -128,6 +128,16 @@ class _Series:
 
 # ----------------------------------------------------------------- reading
 
+def trend_view(bars: Sequence[Bar]) -> tuple[str, bool] | None:
+    """Today's reading and whether a death cross is on (50-day under 200-day, price under both)."""
+    if len(bars) < MIN_HISTORY:
+        return None
+    series = _Series(bars)
+    i = len(bars) - 1
+    death_cross = series.sma50[i] < series.sma200[i] and series.close[i] < series.sma200[i]
+    return series.signal(i), death_cross
+
+
 def _evidence(series: _Series, signal: str) -> Evidence:
     every, same = [], []
     last_counted = -SPACING_DAYS

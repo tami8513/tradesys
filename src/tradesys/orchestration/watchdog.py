@@ -21,7 +21,9 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Protocol
 
+from tradesys.clients.index_sleeve import read_ledger
 from tradesys.clients.proposals import pending
+from tradesys.orchestration.index_desk import book_account
 from tradesys.core.fileio import locked, write_json_atomic
 
 log = logging.getLogger("tradesys.watchdog")
@@ -46,7 +48,9 @@ def inspect(session) -> list[Alert]:
     open_trades = {t.symbol.upper(): t for t in journal.open_trades()}
     held = {p.symbol.upper(): p for p in broker.positions()}
 
-    for symbol in sorted(set(held) - set(open_trades)):
+    # The index robot's funds are held on purpose, without a stop, by its own book.
+    index_held = set(read_ledger(session.tenant.data_dir).holdings)
+    for symbol in sorted(set(held) - set(open_trades) - index_held):
         alerts.append(Alert(
             f"orphan:{symbol}", "critical",
             f"{symbol} מוחזקת אצל הברוקר אבל לא רשומה במערכת, ולכן אף סוכן לא מנהל אותה",
@@ -78,7 +82,7 @@ def inspect(session) -> list[Alert]:
     if halted:
         alerts.append(Alert("halted", "warning", f"המסחר עצור: {reason}"))
 
-    account = broker.account()
+    account = book_account(session)
     peak = journal.day_stats(date.today()).peak_equity
     limit = session.profile.risk.max_drawdown_pct
     if peak > 0 and not halted:

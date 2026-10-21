@@ -21,6 +21,10 @@ class Broker(Protocol):
 
     def submit(self, order: OrderRequest) -> OrderResult: ...
 
+    def trade(self, order: OrderRequest) -> OrderResult:
+        """A plain order without a stop that keeps any partial fill (the index robot)."""
+        ...
+
     def close_position(self, symbol: str) -> OrderResult | None: ...
 
     def protect(self, symbol: str, qty: int, stop_price: float) -> None:

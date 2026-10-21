@@ -7,6 +7,7 @@ every exit would be refused.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -183,3 +184,23 @@ def test_a_limit_entry_gets_a_little_room_to_fill(tmp_path):
     fake = FakeAlpaca({("POST", "/v2/orders"): [order_payload("filled", 3, 580.0)]})
     broker(tmp_path, fake).submit(replace(entry(), order_type=OrderType.LIMIT, limit_price=580.0))
     assert fake.payloads[0]["limit_price"] == "581.16"      # +0.2%
+
+
+def test_an_index_robot_partial_fill_keeps_the_shares_and_the_position(tmp_path):
+    fake = FakeAlpaca({
+        ("POST", "/v2/orders"): [order_payload("accepted")],
+        ("GET", "/v2/orders/ord-1"): [order_payload("partially_filled", 1, 580.0)] * 4
+        + [order_payload("canceled", 1, 580.0)],
+    })
+    plain = replace(entry(), stop_loss=None, take_profit=None)
+
+    result = broker(tmp_path, fake).trade(plain)
+
+    assert result.filled_qty == 1
+    assert ("DELETE", "/v2/positions/SPY") not in fake.calls
+    assert "order_class" not in fake.payloads[0]
+
+
+def test_the_index_robot_path_refuses_an_order_with_a_stop(tmp_path):
+    with pytest.raises(BrokerError):
+        broker(tmp_path, FakeAlpaca({})).trade(entry())

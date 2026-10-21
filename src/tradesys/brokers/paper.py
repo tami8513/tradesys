@@ -148,6 +148,10 @@ class PaperBroker:
             submitted_at=datetime.now(timezone.utc),
         )
 
+    def trade(self, order: OrderRequest) -> OrderResult:
+        """Paper orders fill whole, so a plain order is just a submit."""
+        return self.submit(order)
+
     def protect(self, symbol: str, qty: int, stop_price: float) -> None:
         """No resting orders here: the PositionMonitor enforces the journal's stop."""
 

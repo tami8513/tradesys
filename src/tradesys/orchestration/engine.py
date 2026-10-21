@@ -38,6 +38,7 @@ from tradesys.data.regime import MarketRegime, assess_regime
 from tradesys.memory.directives import DirectiveExtractor
 from tradesys.memory.store import LocalVectorMemory, VectorMemory
 from tradesys.orchestration.agent_report import REASON_SEP
+from tradesys.orchestration.index_desk import book_account, reserved_symbols, run_index_robot
 from tradesys.orchestration.why import explain_reason
 from tradesys.persistence.journal import Journal
 
@@ -331,8 +332,12 @@ class ClientSession:
         report.monitor = self.monitor.check_once()
         events = _monitor_events(report.monitor)
 
-        account = self.broker.account()
+        # The main robot's checks see the account without the index robot's
+        # holdings moving, which have no stops and are not its to protect.
+        account = book_account(self)
         preflight = self.risk.preflight(account)
+        # Selling (insurance, a removed index) stays allowed while halted; buying does not.
+        events.extend(run_index_robot(self, can_buy=preflight.ok))
         if not preflight.ok:
             report.halted = True
             report.halt_reason = preflight.reason
@@ -361,7 +366,8 @@ class ClientSession:
                     " ".join(f"{leader.symbol}:{leader.score:.1f}" for leader in leaders),
                 )
             )
-        candidates = self.scout.scan(focus)
+        reserved = reserved_symbols(self.tenant.data_dir)
+        candidates = [c for c in self.scout.scan(focus) if c.symbol.upper() not in reserved]
         report.candidates = len(candidates)
 
         offense_on = self.profile.risk.conviction_sizing
@@ -440,7 +446,7 @@ class ClientSession:
                 report.submissions += 1
                 # Re-read state so later candidates in this same cycle are evaluated
                 # against the exposure the earlier ones just created.
-                account = self.broker.account()
+                account = book_account(self)
                 positions = self.broker.positions()
                 stats = self.journal.day_stats(trading_day(self.clock))
 
@@ -483,7 +489,7 @@ class ClientSession:
                 features={"avg_volume": proposal.avg_volume},
             )
         )
-        account = self.broker.account()
+        account = book_account(self)
         positions = self.broker.positions()
         stats = self.journal.day_stats(trading_day(self.clock))
         decision = self.risk.evaluate(
