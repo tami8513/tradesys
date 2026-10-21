@@ -51,3 +51,12 @@ def test_quotes_compare_the_last_close_with_the_one_before():
     assert quote["SPY"].price == 102 and round(quote["SPY"].change_pct, 6) == 2.0
     assert quote["SPY"].closes == [100, 102]
     assert "NEW" not in quote
+
+
+def test_the_sparkline_keeps_only_the_recent_closes():
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    bars = [Bar(start + timedelta(days=i), c, c, c, c, 1) for i, c in enumerate(range(100, 400))]
+
+    quote = quotes_from_bars({"SPY": bars}, spark=65)["SPY"]
+
+    assert len(quote.closes) == 65 and quote.closes[-1] == 399

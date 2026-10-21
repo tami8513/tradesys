@@ -85,7 +85,8 @@ class Quote:
     closes: list[float] = field(default_factory=list)  # recent daily closes, for the sparkline
 
 
-def quotes_from_bars(bars_by_symbol: dict[str, list]) -> dict[str, Quote]:
+def quotes_from_bars(bars_by_symbol: dict[str, list], spark: int = 65) -> dict[str, Quote]:
+    """`spark` is how many recent closes the sparkline draws."""
     quotes = {}
     for symbol, bars in bars_by_symbol.items():
         if len(bars) >= 2 and bars[-2].close:
@@ -93,6 +94,6 @@ def quotes_from_bars(bars_by_symbol: dict[str, list]) -> dict[str, Quote]:
                 symbol,
                 bars[-1].close,
                 (bars[-1].close / bars[-2].close - 1) * 100,
-                [b.close for b in bars],
+                [b.close for b in bars[-spark:]],
             )
     return quotes

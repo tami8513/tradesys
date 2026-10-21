@@ -615,7 +615,7 @@ def load_snapshot(client_id: str, bust: int) -> dict:
     account = session.broker.account()
     # Day P&L, drawdown and the floor are tracked on the main robot's book,
     # which leaves out the index robot's profit or loss.
-    book = book_account(session)
+    book = book_account(session, account)
     positions = session.broker.positions()
     stats = journal.day_stats(trading_day(session.clock))
     day_start = journal.day_start_equity()
@@ -741,6 +741,7 @@ def load_snapshot(client_id: str, bust: int) -> dict:
 
 
 CHART_STYLES = ("נרות", "קו", "שטח")
+INDEX_CARD_BARS = 300
 CHART_TOOLS = ("ממוצעים", "בולינגר", "מחזור", "RSI", "השוואה ל-S&P 500")
 ACTION_ICONS = {"enter": "✅", "maybe": "🟡", "wait": "⏳", "avoid": "⛔"}
 
@@ -1070,16 +1071,22 @@ def load_benchmark(client_id: str, started_on: str, bust: int) -> float | None:
 
 @st.cache_data(ttl=60, show_spinner=False)
 @st.cache_resource(ttl=300, show_spinner=False)
-def load_index_quotes(client_id: str, bust: int) -> dict:
+def load_index_data(client_id: str, bust: int) -> tuple[dict, dict]:
+    """Quotes and the chart analyst's reading for every index, from one data request.
+
+    A year of daily bars is enough for the reading the index cards show; the ten
+    years a full analysis needs are fetched only for the chart actually opened.
+    """
+    from tradesys.agents.chart_analyst import analyze
     from tradesys.data.index_board import NAMES, quotes_from_bars
 
     del bust
     market = get_session(client_id).market_data
     if hasattr(market, "daily_many"):
-        bars = market.daily_many(list(NAMES), 65)
+        bars = market.daily_many(list(NAMES), INDEX_CARD_BARS)
     else:
-        bars = {symbol: market.history(symbol, timeframe="1Day", limit=65) for symbol in NAMES}
-    return quotes_from_bars(bars)
+        bars = {s: market.history(s, timeframe="1Day", limit=INDEX_CARD_BARS) for s in NAMES}
+    return quotes_from_bars(bars), {s: analyze(s, series) for s, series in bars.items()}
 
 
 def sparkline(closes: list[float], rising: bool) -> str:
@@ -1154,7 +1161,7 @@ def index_board(client_id: str, session) -> None:
     board = board or read_board(session.tenant.data_dir)
     bust = st.session_state.get("_bust", 0)
     try:
-        quotes = load_index_quotes(client_id, bust)
+        quotes, readings = load_index_data(client_id, bust)
     except Exception:  # the board is a view; a data outage must not break the home tab
         st.caption("המדדים לא זמינים כרגע.")
         return
@@ -1166,16 +1173,10 @@ def index_board(client_id: str, session) -> None:
     with settings_col:
         board_settings_popover(client_id, board, demo)
 
-    big = []
-    for symbol in board.featured:
-        if symbol not in quotes:
-            continue
-        try:
-            reading = analyst_reading(client_id, symbol, bust)
-        except Exception:  # the verdict is extra; the price still shows
-            reading = None
-        big.append(index_card(quotes[symbol], NAMES[symbol], reading) if reading
-                   else index_card(quotes[symbol], NAMES[symbol]))
+    big = [
+        index_card(quotes[symbol], NAMES[symbol], readings.get(symbol))
+        for symbol in board.featured if symbol in quotes
+    ]
     if big:
         st.markdown(f'<div class="ts-indices ts-indices-big">{"".join(big)}</div>',
                     unsafe_allow_html=True)
@@ -1464,17 +1465,16 @@ def indices_board(client_id: str) -> None:
     """The chart analyst's daily read on the leading indices."""
     from tradesys.agents.chart_analyst import LEADING_INDICES
 
-    bust = st.session_state.get("_bust", 0)
+    try:
+        quotes, readings = load_index_data(client_id, st.session_state.get("_bust", 0))
+    except Exception:  # the board is a view; a data outage must not break the tab
+        return
     cards = []
     for symbol, name in LEADING_INDICES:
-        try:
-            reading = analyst_reading(client_id, symbol, bust)
-            daily = load_daily_history(client_id, symbol, bust)
-        except Exception:  # one index failing to load must not hide the others
+        reading = readings.get(symbol)
+        if reading is None or symbol not in quotes:
             continue
-        if reading is None:
-            continue
-        day = (daily[-1].close / daily[-2].close - 1) * 100
+        day = quotes[symbol].change_pct
         tone = "ts-up" if day >= 0 else "ts-down"
         cards.append(
             f'<div class="ts-index ts-index-{reading.action}">'

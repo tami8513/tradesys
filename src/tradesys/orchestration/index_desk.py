@@ -28,9 +28,12 @@ CASH_HEADROOM = 0.98
 AgentEvent = tuple[str, str, str, str]
 
 
-def book_account(session) -> AccountSnapshot:
-    """The account as the main robot's risk checks must see it: without the index robot."""
-    account = session.broker.account()
+def book_account(session, account: AccountSnapshot | None = None) -> AccountSnapshot:
+    """The account as the main robot's risk checks must see it: without the index robot.
+
+    Pass `account` when it was just read, to save the broker a second call.
+    """
+    account = account or session.broker.account()
     ledger = read_ledger(session.tenant.data_dir)
     if not (ledger.holdings or ledger.contributed or ledger.parked):
         return account
