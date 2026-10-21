@@ -54,7 +54,7 @@ def test_strong_setup_is_called_out():
     trades = [trade(i, 300, SetupType.PULLBACK, "take_profit") for i in range(5)]
     cards = report(trades)
     assert cards["scout"].status == "good"
-    assert any("החזקה" in f for f in cards["scout"].findings)
+    assert any("החזקה" in f for f in cards["scout"].strengths)
 
 
 def test_dominant_rejection_reason_is_grouped_despite_different_numbers():
@@ -101,7 +101,7 @@ def test_head_agent_surfaces_the_worst_problems_first():
     cards = report(trades)
     assert cards["head"].status == "bad"
     assert cards["head"].findings
-    assert len(cards["head"].findings) <= 3
+    assert len(cards["head"].findings) <= 5
 
 
 def test_a_full_cycle_writes_the_agent_event_log(tmp_path):

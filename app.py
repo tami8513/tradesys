@@ -1701,6 +1701,15 @@ def deep_panel(client_id: str, session, symbol: str, armed: bool) -> None:
 
     answer = verdict(inputs["reading"], inputs["lab"], inputs["news"],
                      inputs["analysts"], inputs["growth"], inputs["earnings"], inputs.get("flow"))
+    if inputs["reading"] is not None:
+        from zoneinfo import ZoneInfo
+
+        from tradesys.orchestration.track_record import log_analysis
+
+        # Every recommendation is kept, so the admin report can show later how it did.
+        log_analysis(get_system().settings.data_dir / "_platform",
+                     datetime.now(ZoneInfo("America/New_York")).date(), symbol, answer.level,
+                     inputs["reading"].price)
     rows = "".join(
         f'<li class="{"ts-scout-plus" if points > 0 else "ts-scout-minus" if points < 0 else ""}">'
         f"{esc(why)} <b>{ltr(f'{points:+d}')}</b></li>"

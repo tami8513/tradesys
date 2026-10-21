@@ -296,6 +296,52 @@ STATUS_STYLE = {
 }
 
 
+def priced_calls(platform_dir: Path, market) -> tuple[list, list]:
+    """The scout's shortlists and the full analyses, priced again today."""
+    from datetime import date
+
+    from tradesys.orchestration.track_record import BENCHMARK, outcomes, read_analyses, scout_calls
+
+    today = date.today()
+    scout, analyses = scout_calls(platform_dir, today), read_analyses(platform_dir)
+    symbols = sorted({c.symbol for c in scout + analyses} | {BENCHMARK})
+    try:
+        if hasattr(market, "daily_many"):
+            bars = {}
+            for i in range(0, len(symbols), 50):
+                bars.update(market.daily_many(symbols[i:i + 50], 130))
+        else:
+            bars = {s: market.history(s, timeframe="1Day", limit=130) for s in symbols}
+    except Exception:  # without prices the analysts simply show no record yet
+        return [], []
+    return outcomes(scout, bars, today), outcomes(analyses, bars, today)
+
+
+def client_ops(session, platform_dir: Path):
+    """Is the phone connected, what is open, and how the morning questions went."""
+    import os
+
+    from tradesys.orchestration.agent_report import Ops
+    from tradesys.orchestration.morning import QUESTIONS_FILE
+    from tradesys.orchestration.watchdog import AlertBook
+
+    questions = []
+    path = session.tenant.data_dir / QUESTIONS_FILE
+    if path.exists():
+        try:
+            questions = json.loads(path.read_text(encoding="utf-8")).get("questions", [])
+        except ValueError:
+            questions = []
+    open_alerts = AlertBook(platform_dir / "alerts.json").active().get(session.client_id, {})
+    return Ops(
+        session.client_id,
+        bool(os.getenv("TRADESYS_TELEGRAM__BOT_TOKEN") and os.getenv("TRADESYS_TELEGRAM__CHAT_ID")),
+        len(open_alerts),
+        len(questions),
+        sum(1 for q in questions if q.get("answer")),
+    )
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def load_agent_report(client_ids: tuple[str, ...], days: int, bust: int) -> list:
     """Report cards over the chosen tenants. Reads journals only; writes nothing."""
@@ -307,7 +353,8 @@ def load_agent_report(client_ids: tuple[str, ...], days: int, bust: int) -> list
     from tradesys.orchestration.agent_report import Book, ReportInput, build_report
 
     since = datetime.now(timezone.utc) - timedelta(days=days)
-    trades, events, statuses, books, replays = [], [], [], [], []
+    trades, events, statuses, books, replays, ops = [], [], [], [], [], []
+    market = platform_dir = None
     directives = memory = 0
     for client_id in client_ids:
         try:
@@ -325,6 +372,9 @@ def load_agent_report(client_ids: tuple[str, ...], days: int, bust: int) -> list
         statuses += journal.order_statuses()
         directives += len(journal.active_directives())
         memory += session.memory.count()
+        platform_dir = session.tenant.data_dir.parent / "_platform"
+        market = market or session.market_data
+        ops.append(client_ops(session, platform_dir))
         replay = load_result(session.tenant.data_dir.parent, client_id)
         if replay:
             replays.append((client_id, replay))
@@ -337,7 +387,13 @@ def load_agent_report(client_ids: tuple[str, ...], days: int, bust: int) -> list
                 [t.r_multiple() for t in history],
             )
         )
-    return build_report(ReportInput(trades, events, statuses, directives, memory, books, replays))
+    scout_results, analysis_results = (
+        priced_calls(platform_dir, market) if platform_dir is not None else ([], [])
+    )
+    return build_report(ReportInput(
+        trades, events, statuses, directives, memory, books, replays,
+        scout_outcomes=scout_results, analysis_outcomes=analysis_results, ops=ops,
+    ))
 
 
 def render_agents(client_ids: tuple[str, ...], bust: int) -> None:
@@ -356,36 +412,66 @@ def render_agents(client_ids: tuple[str, ...], bust: int) -> None:
     )
     chosen = client_ids if scope == "כל הלקוחות" else (scope,)
     cards = load_agent_report(chosen, days, bust)
+    head, agents = cards[0], cards[1:]
 
-    for card in cards:
-        label, color = STATUS_STYLE[card.status]
-        kpis = "".join(
-            f'<div style="display:flex;justify-content:space-between;gap:12px;'
-            f'padding:3px 0;border-bottom:1px solid {PALETTE["border"]}">'
-            f'<span style="color:{PALETTE["muted"]}">{html.escape(k)}</span>'
-            f"<b>{html.escape(v)}</b></div>"
-            for k, v in card.kpis
-        )
-        findings = "".join(
-            f'<li style="margin:4px 0">{html.escape(f)}</li>' for f in card.findings
-        )
-        head = card.key == "head"
-        st.markdown(
-            f'<div class="ts-card" style="border-color:{color if head else PALETTE["border"]};'
-            f'margin-bottom:12px">'
-            f'<div style="display:flex;justify-content:space-between;align-items:center">'
-            f'<div style="font-size:{18 if head else 16}px;font-weight:700">'
-            f"{html.escape(card.name)}</div>"
-            f'<span style="color:{color};border:1px solid {color};border-radius:999px;'
-            f'padding:2px 10px;font-size:12px">{label}</span></div>'
-            f'<div style="color:{PALETTE["muted"]};font-size:13px;margin:6px 0 10px">'
-            f"{html.escape(card.role)}</div>"
-            f"{kpis}"
-            + (f'<ul style="margin:10px 0 0;padding-inline-start:18px">{findings}</ul>'
-               if findings else "")
-            + "</div>",
-            unsafe_allow_html=True,
-        )
+    render_agent_card(head, highlight=True)
+    order = {"bad": 0, "watch": 1, "good": 2, "no_data": 3}
+    rows = "".join(
+        f'<tr><td><span style="color:{STATUS_STYLE[c.status][1]}">●</span> <b>{html.escape(c.name)}</b></td>'
+        f'<td style="color:{STATUS_STYLE[c.status][1]}">{STATUS_STYLE[c.status][0]}</td>'
+        f"<td>{html.escape(c.verdict)}</td>"
+        f'<td style="color:{PALETTE["muted"]}">{html.escape(c.findings[0]) if c.findings else "—"}</td></tr>'
+        for c in sorted(agents, key=lambda c: order[c.status])
+    )
+    st.markdown(
+        '<div class="ts-card" style="margin-bottom:14px;overflow-x:auto">'
+        '<div style="font-size:16px;font-weight:700;margin-bottom:8px">כל הסוכנים במבט אחד</div>'
+        '<table style="width:100%;border-collapse:collapse;font-size:13px">'
+        '<tr style="text-align:right;color:#8d97b0"><th>סוכן</th><th>מצב</th><th>בשורה אחת</th>'
+        "<th>הדבר הראשון לשפר</th></tr>"
+        f"{rows}</table></div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("###### הדוח המלא של כל סוכן")
+    for card in sorted(agents, key=lambda c: order[c.status]):
+        render_agent_card(card)
+
+
+def render_agent_card(card, highlight: bool = False) -> None:
+    label, color = STATUS_STYLE[card.status]
+    kpis = "".join(
+        f'<div style="display:flex;justify-content:space-between;gap:12px;'
+        f'padding:3px 0;border-bottom:1px solid {PALETTE["border"]}">'
+        f'<span style="color:{PALETTE["muted"]}">{html.escape(k)}</span>'
+        f"<b>{html.escape(v)}</b></div>"
+        for k, v in card.kpis
+    )
+
+    def section(title: str, items: list[str], tone: str) -> str:
+        if not items:
+            return ""
+        lines = "".join(f'<li style="margin:4px 0">{html.escape(i)}</li>' for i in items)
+        return (f'<div style="margin-top:10px;font-weight:700;color:{tone}">{title}</div>'
+                f'<ul style="margin:4px 0 0;padding-inline-start:18px">{lines}</ul>')
+
+    st.markdown(
+        f'<div class="ts-card" style="border-color:{color if highlight else PALETTE["border"]};'
+        f'border-right:4px solid {color};margin-bottom:12px">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;gap:10px">'
+        f'<div style="font-size:{18 if highlight else 16}px;font-weight:700">{html.escape(card.name)}</div>'
+        f'<span style="color:{color};border:1px solid {color};border-radius:999px;'
+        f'padding:2px 10px;font-size:12px;white-space:nowrap">{label}</span></div>'
+        + (f'<div style="font-weight:600;margin-top:4px">{html.escape(card.verdict)}</div>'
+           if card.verdict and not highlight else "")
+        + f'<div style="color:{PALETTE["muted"]};font-size:13px;margin:6px 0 10px">'
+        f"{html.escape(card.role)}</div>"
+        f"{kpis}"
+        + section("✅ מה עובד", card.strengths, PALETTE["positive"])
+        + section("🔧 איפה להשתפר" if not highlight else "🎯 הפעולות החשובות ביותר",
+                  card.findings, PALETTE["warning"])
+        + "</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def render_backtest(client_ids: tuple[str, ...]) -> None:

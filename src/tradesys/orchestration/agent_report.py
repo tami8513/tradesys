@@ -18,6 +18,7 @@ from tradesys.agents.offense import CONVICTION, PROVEN_TRADES, SetupEdge
 from tradesys.clients.profile import RiskProfile
 from tradesys.core.enums import Side
 from tradesys.core.models import TradeRecord
+from tradesys.orchestration.track_record import Outcome
 
 MIN_TRADES = 5
 # Joins a rejection's reasons in the event log. Not "; ": reasons contain it.
@@ -50,7 +51,9 @@ class AgentCard:
     role: str
     status: str = "no_data"            # good | watch | bad | no_data
     kpis: list[tuple[str, str]] = field(default_factory=list)
-    findings: list[str] = field(default_factory=list)
+    findings: list[str] = field(default_factory=list)      # where it should improve
+    strengths: list[str] = field(default_factory=list)     # what works
+    verdict: str = ""                                      # one line for the overview
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +76,18 @@ class ReportInput:
     memory_records: int
     books: Sequence[Book] = ()
     replays: Sequence[tuple[str, dict[str, Any]]] = ()   # (client_id, latest historical test)
+    scout_outcomes: Sequence[Outcome] = ()                # the scout's shortlists, priced again
+    analysis_outcomes: Sequence[Outcome] = ()             # full analyses, priced again
+    ops: Sequence[Ops] = ()                               # per client: phone channel and alerts
+
+
+@dataclass(frozen=True, slots=True)
+class Ops:
+    client_id: str
+    phone_connected: bool
+    open_alerts: int
+    questions_asked: int
+    questions_answered: int
 
 
 def build_report(data: ReportInput) -> list[AgentCard]:
@@ -87,7 +102,14 @@ def build_report(data: ReportInput) -> list[AgentCard]:
         _stress(data),
         _index(data),
         _replay(data),
+        _hunter(data),
+        _talent_scout(data),
+        _money_flow(data),
+        _analyst(data),
+        _alerts(data),
     ]
+    for card in cards:
+        card.verdict = card.verdict or DEFAULT_VERDICTS[card.status]
     return [_head(cards), *cards]
 
 
@@ -96,6 +118,48 @@ def _events(data: ReportInput, agent: str, kind: str | None = None) -> list[dict
         e for e in data.events
         if e["agent"] == agent and (kind is None or e["kind"] == kind)
     ]
+
+
+DEFAULT_VERDICTS = {
+    "good": "עובד טוב",
+    "watch": "עובד, אבל יש מה לשפר",
+    "bad": "דורש טיפול",
+    "no_data": "אין עדיין מספיק נתונים לשפוט",
+}
+ANALYST_MIN_CALLS = 5
+
+
+def _avg(xs: Sequence[float]) -> float:
+    return sum(xs) / len(xs) if xs else 0.0
+
+
+def _calls_kpis(card: AgentCard, label: str, results: Sequence[Outcome]) -> None:
+    card.kpis.append((
+        f"{label}: תשואה ממוצעת מאז ההמלצה",
+        f"{_avg([o.ret for o in results]):+.1f}% (המדד {_avg([o.bench for o in results]):+.1f}%)",
+    ))
+    card.kpis.append((f"{label}: ניצחו את המדד", f"{sum(o.beat for o in results)} מתוך {len(results)}"))
+
+
+def _judge_calls(card: AgentCard, results: Sequence[Outcome], what: str) -> None:
+    """Status, verdict and advice from how the calls did against the index."""
+    if len(results) < ANALYST_MIN_CALLS:
+        card.verdict = f"עוד מוקדם: {len(results)} המלצות בנות שבוע ומעלה, צריך לפחות {ANALYST_MIN_CALLS}"
+        return
+    edge = _avg([o.ret for o in results]) - _avg([o.bench for o in results])
+    card.verdict = f"{what} {'הקדימו' if edge >= 0 else 'פיגרו אחרי'} את המדד ב-{abs(edge):.1f}%"
+    if edge >= 1:
+        card.status = "good"
+        card.strengths.append(f"{what} הקדימו את המדד ב-{edge:.1f}% בממוצע מאז ההמלצה.")
+    elif edge >= -1:
+        card.status = "watch"
+        card.findings.append(f"{what} עשו בערך כמו המדד ({edge:+.1f}%). עדיין לא מוסיף ערך מעבר להחזקת המדד.")
+    else:
+        card.status = "bad"
+        card.findings.append(
+            f"{what} פיגרו אחרי המדד ב-{-edge:.1f}%. כדאי לבחון את המשקלים של הציון, "
+            "ולא לפעול לפי ההמלצות עד שזה משתפר."
+        )
 
 
 def _avg_r(trades: Sequence[TradeRecord]) -> float:
@@ -128,7 +192,7 @@ def _scout(data: ReportInput) -> AgentCard:
                 "שקול לחסום אותה בפרופיל או לצמצם אותה לניירות שבהם היא עובדת."
             )
         elif len(trades) >= MIN_TRADES and avg >= 0.5:
-            card.findings.append(
+            card.strengths.append(
                 f"התבנית '{name}' היא החזקה בתיק: ממוצע {avg:+.2f}R. "
                 "כדאי לשקול להרחיב אותה לניירות נוספים ברשימת המעקב."
             )
@@ -183,6 +247,11 @@ def _risk(data: ReportInput) -> AgentCard:
         card.findings.append(
             f"המסחר נעצר {len(halts)} פעמים על ידי מגבלות ההפסד. כדאי לעבור על העסקאות שהובילו לעצירה."
         )
+    if approved or rejected:
+        card.strengths.append(
+            f"בדק {len(approved) + len(rejected)} רעיונות ואישר רק {len(approved)}: כל עסקה עברה "
+            "את כל מגבלות ההפסד, הפיזור והדוחות."
+        )
     if approved or rejected or halts:
         card.status = "watch" if halts else "good"
     return card
@@ -206,6 +275,9 @@ def _execution(data: ReportInput) -> AgentCard:
             ("נדחו", str(statuses.get("rejected", 0))),
             ("בוטלו", str(statuses.get("canceled", 0))),
         ]
+        card.verdict = f"{rate:.0%} מהפקודות בוצעו"
+        if rate >= 0.9:
+            card.strengths.append("כמעט כל הפקודות בוצעו, ושום פקודה לא נשלחה פעמיים.")
         if rate < 0.7:
             card.findings.append(
                 f"רק {rate:.0%} מהפקודות בוצעו. מחיר הגבול כנראה רחוק מדי מהשוק, "
@@ -229,6 +301,8 @@ def _exits(data: ReportInput) -> AgentCard:
     trailed_wins = [
         t for t in trades if t.exit_reason == "stop_loss" and (t.realized_pnl or 0) > 0
     ]
+    if trailed_wins:
+        card.strengths.append(f"הסטופ הנגרר נעל רווח ב-{len(trailed_wins)} עסקאות שהיו נסגרות אחרת ביעד או בהפסד.")
     card.kpis += [
         ("סטופ נגרר שנעל רווח", str(len(trailed_wins))),
         ("העלאות סטופ", str(len(_events(data, "monitor", "stop_raised")))),
@@ -320,6 +394,14 @@ def _efficiency(data: ReportInput) -> AgentCard:
             f"יחס רווח/הפסד {profit_factor:.2f}: המערכת מפסידה יותר ממה שהיא מרוויחה. "
             "אל תעבור לכסף אמיתי לפני שזה משתפר."
         )
+    if profit_factor >= 1:
+        card.strengths.append(f"על כל דולר הפסד המערכת הרוויחה {profit_factor:.2f} דולר.")
+    if profit_factor < 1.5:
+        card.findings.append(
+            f"יחס רווח/הפסד {profit_factor:.2f}. יעד סביר הוא 1.5 ומעלה; הדרך לשם היא לחתוך מהר יותר "
+            "עסקאות שלא זזות, או להחזיק יותר זמן את המנצחות."
+        )
+    card.verdict = f"יחס רווח/הפסד {profit_factor:.2f}, תוחלת {_avg_r(trades):+.2f}R לעסקה"
     card.status = "good" if profit_factor >= 1.5 else "watch" if profit_factor >= 1 else "bad"
     return card
 
@@ -346,7 +428,7 @@ def _offense(data: ReportInput) -> AgentCard:
         edge = SetupEdge(len(rs), sum(rs) / len(rs))
         name = SETUP_NAMES.get(setup, setup)
         if edge.verdict == "proven":
-            card.findings.append(f"'{name}' הוכיחה את עצמה ({edge.expectancy:+.2f}R) ומקבלת גודל מלא.")
+            card.strengths.append(f"'{name}' הוכיחה את עצמה ({edge.expectancy:+.2f}R) ומקבלת גודל מלא.")
         elif edge.verdict == "losing":
             card.findings.append(
                 f"'{name}' מפסידה ({edge.expectancy:+.2f}R על {edge.trades}) ומקבלת חצי גודל. "
@@ -520,6 +602,129 @@ def _replay(data: ReportInput) -> AgentCard:
     return card
 
 
+def _hunter(data: ReportInput) -> AgentCard:
+    card = AgentCard(
+        "hunter",
+        "צייד המובילות",
+        "פעם בשבוע מדרג את כל המניות במאגר המאושר לפי העלייה ב-3 וב-6 חודשים ומגמה "
+        "בריאה, ומשאיר לרובוט רק את המובילות.",
+    )
+    picks = _events(data, "hunter", "leaders")
+    if not picks:
+        return card
+    latest = picks[-1]["detail"].split()
+    card.kpis.append(("המובילות עכשיו", " ".join(p.split(":")[0] for p in latest) or "—"))
+    card.strengths.append("הרובוט מתרכז במניות החזקות של השוק במקום לפזר על כל המאגר.")
+    card.findings.append(
+        "בבדיקה ההיסטורית מניות 'מובילות' לבדן לא ניצחו את המדד. כדאי לבדוק בבדיקה ההיסטורית "
+        "מספר מובילות שונה (למשל 5 או 12) לפני שמשנים."
+    )
+    card.status = "watch"
+    return card
+
+
+def _talent_scout(data: ReportInput) -> AgentCard:
+    card = AgentCard(
+        "talent_scout",
+        "הסקאוט (סוכן אנליסט)",
+        "כל ערב עובר על המובילות, על המניות הכי נסחרות ועל אלה שזינקו, ונותן ציון A/B/C "
+        "לפי כושר, חוזק מול המדד, חדשות, אנליסטים, צמיחה וסיכון.",
+    )
+    graded = [o for o in data.scout_outcomes if o.call.label in ("A", "B", "C")]
+    top = [o for o in graded if o.call.label == "A"]
+    long_shots = [o for o in data.scout_outcomes if o.call.label == "S"]
+    card.kpis.append(("המלצות בנות שבוע ומעלה", str(len(graded) + len(long_shots))))
+    if top:
+        _calls_kpis(card, "ציון A", top)
+    if graded:
+        _calls_kpis(card, "כל ההמלצות", graded)
+    if long_shots:
+        _calls_kpis(card, "🚀 הימורים", long_shots)
+        if _avg([o.ret for o in long_shots]) < -10:
+            card.findings.append("ההימורים (מניות זולות) ירדו ביותר מ-10% בממוצע. כדאי להחמיר את תנאי הכניסה שלהם.")
+    _judge_calls(card, top or graded, "מניות ציון A" if top else "המלצות הסקאוט")
+    return card
+
+
+def _money_flow(data: ReportInput) -> AgentCard:
+    card = AgentCard(
+        "money_flow",
+        "סוכן זרימת הכסף",
+        "מזהה קנייה חריגה: נפח של פי 2 ומעלה וסגירה קרוב לשיא היום, וזרימת כסף ב-20 יום. "
+        "נותן משקל רק אם במניה עצמה זה עבד בעבר.",
+    )
+    flows = [o for o in data.scout_outcomes if o.call.label == "F"]
+    card.kpis.append(("קניות חריגות שנבדקו", str(len(flows))))
+    if flows:
+        _calls_kpis(card, "🐋 קנייה חריגה", flows)
+    _judge_calls(card, flows, "מניות עם קנייה חריגה")
+    card.findings.append(
+        "במחקר של 10 שנים על המניות הגדולות, קנייה חריגה לבדה לא הקדימה את המדד. "
+        "הסוכן מקבל משקל רק דרך ההיסטוריה של כל מניה, וזה צריך להישאר כך עד שהרקורד שלו יוכיח אחרת."
+    )
+    return card
+
+
+def _analyst(data: ReportInput) -> AgentCard:
+    card = AgentCard(
+        "analyst",
+        "מנתח הגרפים והניתוח המלא",
+        "קורא את הגרף (מגמה, תמיכה, פריצה), בודק איך אותה קריאה עבדה במניה בעבר, מריץ את "
+        "מעבדת האסטרטגיות על 5 שנים ומחבר הכול להמלצה: כן, בזהירות או לא עכשיו.",
+    )
+    by_level = {level: [o for o in data.analysis_outcomes if o.call.label == level]
+                for level in ("go", "careful", "no")}
+    names = {"go": "✅ כן", "careful": "🟡 בזהירות", "no": "⛔ לא עכשיו"}
+    card.kpis.append(("ניתוחים בני שבוע ומעלה", str(len(data.analysis_outcomes))))
+    for level, results in by_level.items():
+        if results:
+            _calls_kpis(card, names[level], results)
+    go, no = by_level["go"] + by_level["careful"], by_level["no"]
+    if len(go) >= ANALYST_MIN_CALLS and len(no) >= ANALYST_MIN_CALLS:
+        gap = _avg([o.ret for o in go]) - _avg([o.ret for o in no])
+        card.verdict = f"המלצות 'כן' {'הקדימו' if gap >= 0 else 'פיגרו אחרי'} את 'לא עכשיו' ב-{abs(gap):.1f}%"
+        if gap >= 1:
+            card.status = "good"
+            card.strengths.append(f"מה שהוא המליץ לקנות עלה {gap:.1f}% יותר ממה שהוא אמר לחכות איתו.")
+        else:
+            card.status = "watch" if gap > -1 else "bad"
+            card.findings.append(
+                "ההמלצות לא מבדילות בין מניות טובות לרעות: 'כן' לא עשה טוב יותר מ'לא עכשיו'. "
+                "כדאי לשנות את משקלי הציון."
+            )
+    else:
+        _judge_calls(card, go, "המלצות 'כן'")
+    return card
+
+
+def _alerts(data: ReportInput) -> AgentCard:
+    card = AgentCard(
+        "alerts",
+        "סוכן ההתראות והטלפון",
+        "שולח לטלפון הודעה על כל קנייה ומכירה, התראות על תקלות, ושאלת בוקר לפני הפתיחה על "
+        "מניות ברווח יפה. בודק כל סבב שיש לכל פוזיציה הגנה אצל הברוקר.",
+    )
+    if not data.ops:
+        return card
+    connected = all(o.phone_connected for o in data.ops)
+    card.kpis += [
+        ("טלגרם מחובר", "כן" if connected else "לא"),
+        ("התראות פתוחות", str(sum(o.open_alerts for o in data.ops))),
+        ("שאלות בוקר / נענו", f"{sum(o.questions_asked for o in data.ops)} / "
+                              f"{sum(o.questions_answered for o in data.ops)}"),
+    ]
+    if not connected:
+        card.status = "bad"
+        card.verdict = "הטלפון לא מחובר: ההתראות וההודעות לא מגיעות אליך"
+        card.findings.append(
+            "חבר טלגרם (שני משתנים ב-Render). בלי זה, תקלה כמו מניה בלי הגנה תתגלה רק כשתיכנס לאתר."
+        )
+    else:
+        card.status = "watch" if sum(o.open_alerts for o in data.ops) else "good"
+        card.strengths.append("כל קנייה, מכירה ותקלה מגיעות לטלפון בזמן אמת.")
+    return card
+
+
 def _head(cards: Sequence[AgentCard]) -> AgentCard:
     card = AgentCard(
         "head",
@@ -538,7 +743,7 @@ def _head(cards: Sequence[AgentCard]) -> AgentCard:
         for agent in cards:
             if agent.status == rank:
                 card.findings.extend(f"{agent.name}: {f}" for f in agent.findings[:1])
-    card.findings = card.findings[:3]
+    card.findings = card.findings[:5]
     if statuses.get("bad"):
         card.status = "bad"
     elif statuses.get("watch"):
