@@ -1876,7 +1876,7 @@ def my_stocks(client_id: str, session, armed: bool) -> None:
 
 def standing_approval(client_id: str, session, picks: list, pick, armed: bool) -> None:
     """Approve an "ask first" pick ahead of time, for the coming trading day."""
-    from tradesys.clients.picks import approval_day, write_picks
+    from tradesys.clients.picks import PREAPPROVAL_MAX, approval_day, write_picks
 
     day = approval_day(datetime.now(timezone.utc))
     label = day.strftime("%d/%m")
@@ -1904,14 +1904,14 @@ def standing_approval(client_id: str, session, picks: list, pick, armed: bool) -
 
     amount_col, button_col = st.columns([2, 2])
     amount = amount_col.number_input(
-        f"סכום מקסימלי ל-{pick.symbol} ($, 0 = לפי שומר הסיכון)",
-        min_value=0.0, value=0.0, step=500.0,
+        f"סכום מקסימלי ל-{pick.symbol} ($, עד {PREAPPROVAL_MAX:,.0f})",
+        min_value=500.0, max_value=PREAPPROVAL_MAX, value=PREAPPROVAL_MAX, step=500.0,
         key=f"preapprove_amount_{client_id}_{pick.symbol}",
     )
     if button_col.button(f"✅ אשר מראש ל-{label}", disabled=not armed,
                          key=f"preapprove_on_{client_id}_{pick.symbol}",
                          width="stretch"):
-        save(preapproved_on=day.isoformat(), max_amount=amount or None)
+        save(preapproved_on=day.isoformat(), max_amount=min(amount, PREAPPROVAL_MAX))
 
 
 def proposals_banner(client_id: str, session, armed: bool) -> None:

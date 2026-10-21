@@ -16,7 +16,7 @@ from tradesys.brokers.paper import PaperBroker
 from tradesys.clients.loader import ClientRegistry
 from tradesys.clients.profile import ClientProfile
 from tradesys.clients.secrets import EnvSecretResolver, SecretResolver
-from tradesys.clients.picks import apply_picks, read_picks
+from tradesys.clients.picks import PREAPPROVAL_MAX, apply_picks, read_picks
 from tradesys.clients.proposals import propose, read_proposals, resolve
 from tradesys.clients.tracks import apply_control, read_control, read_track
 from tradesys.core.clock import Clock, SystemClock, trading_day
@@ -44,10 +44,8 @@ from tradesys.persistence.journal import Journal
 AgentEvent = tuple[str, str, str, str]
 
 
-def _within_budget(decision: RiskDecision, budget: float | bool) -> RiskDecision:
+def _within_budget(decision: RiskDecision, budget: float) -> RiskDecision:
     """Trim an approved entry to the client's standing dollar cap, never grow it."""
-    if budget is True:
-        return decision
     cap = int(budget // decision.order.limit_price)
     if cap >= decision.qty:
         return decision
@@ -520,13 +518,16 @@ class ClientSession:
         self.journal.log_events([("client", "approved", proposal.symbol, note)], now)
         return note
 
-    def _standing_approval(self, symbol: str) -> float | None | bool:
-        """The approved budget for `symbol` today: a dollar cap, True for no cap,
-        or None when there is no standing approval for today."""
+    def _standing_approval(self, symbol: str) -> float | None:
+        """The dollar budget the client approved for `symbol` today, or None.
+
+        Never above PREAPPROVAL_MAX, whatever the saved file says: an approval
+        saved without an amount is not an open cheque.
+        """
         today = trading_day(self.clock).isoformat()
         for approved_symbol, day, max_amount in self.profile.preapprovals:
             if approved_symbol == symbol and day == today:
-                return max_amount if max_amount else True
+                return min(max_amount or PREAPPROVAL_MAX, PREAPPROVAL_MAX)
         return None
 
     def decline_proposal(self, proposal_id: str) -> None:

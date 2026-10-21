@@ -250,3 +250,18 @@ def test_a_budget_below_one_share_buys_nothing(tmp_path):
         assert session.broker.positions() == []
     finally:
         session.close()
+
+
+def test_an_approval_is_capped_even_without_an_amount_or_above_the_limit(tmp_path):
+    from tradesys.clients.picks import PREAPPROVAL_MAX
+
+    today = MARKET_HOURS.date().isoformat()
+    session = demo_session(tmp_path, [
+        Pick("RIVN", ask_first=True, preapproved_on=today),
+        Pick("KULR", ask_first=True, preapproved_on=today, max_amount=1_000_000.0),
+    ])
+    try:
+        assert session._standing_approval("RIVN") == PREAPPROVAL_MAX
+        assert session._standing_approval("KULR") == PREAPPROVAL_MAX
+    finally:
+        session.close()

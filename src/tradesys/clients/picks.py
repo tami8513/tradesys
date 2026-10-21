@@ -25,6 +25,8 @@ from tradesys.core.fileio import write_json_atomic
 
 PICKS_FILE = "my_stocks.json"
 MAX_PICKS = 10
+# Most a standing approval lets the robot spend on one pick without asking.
+PREAPPROVAL_MAX = 20_000.0
 PICK_SETUPS = frozenset(SetupType)
 _TICKER = re.compile(r"^[A-Z]{1,5}(\.[A-Z])?$")
 
