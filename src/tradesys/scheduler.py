@@ -19,10 +19,12 @@ import time
 from datetime import datetime, timezone
 
 from tradesys.clients.automation import automation_enabled, lifecycle_active
+from tradesys.clients.picks import approval_day
 from tradesys.core.config import Settings
 from tradesys.core.logging import configure
 from tradesys.data.market_clock import MarketClock, market_clock
 from tradesys.orchestration.engine import TradingSystem
+from tradesys.orchestration.scouting import scout_due, scout_market
 from tradesys.orchestration.watchdog import (
     AlertBook,
     Notifier,
@@ -94,6 +96,17 @@ def seconds_until(moment: datetime, now: datetime) -> float:
     return max(0.0, (moment - now).total_seconds())
 
 
+def scout_overnight(settings: Settings) -> None:
+    """Write the talent scout's report for the coming trading day, once."""
+    day = approval_day(datetime.now(timezone.utc))
+    if not scout_due(settings, day):
+        return
+    try:
+        scout_market(settings, day)
+    except Exception:
+        log.exception("talent scout failed; retrying on the next idle check")
+
+
 def run_forever(
     system: TradingSystem,
     clock: MarketClock,
@@ -111,6 +124,7 @@ def run_forever(
                 time.sleep(cycle_minutes * 60)
                 continue
             watch(system, book, notifier)
+            scout_overnight(system.settings)
             wait = seconds_until(status.next_open, datetime.now(timezone.utc))
             log.info(
                 "market closed (%s); next open %s; sleeping %.0f min",

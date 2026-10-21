@@ -224,6 +224,17 @@ CSS = f"""
   .ts-lock-title {{ font-size: 21px; font-weight: 700; color: {PALETTE["gold"]};
       margin-bottom: 8px; }}
   .ts-lock-body {{ font-size: 14px; color: {PALETTE["muted"]}; line-height: 1.7; }}
+  .ts-scout {{ background: {PALETTE["panel"]}; border: 1px solid {PALETTE["border"]};
+      border-radius: 14px; padding: 14px 18px; margin-bottom: 4px; font-size: 13px; }}
+  .ts-scout-head {{ display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }}
+  .ts-grade {{ width: 34px; height: 34px; line-height: 34px; border-radius: 10px;
+      text-align: center; font-weight: 800; font-size: 18px; color: #06121c; flex: none; }}
+  .ts-grade-A {{ background: {PALETTE["positive"]}; }}
+  .ts-grade-B {{ background: {PALETTE["gold"]}; }}
+  .ts-grade-C {{ background: {PALETTE["muted"]}; }}
+  .ts-scout ul {{ margin: 8px 0 0; padding-inline-start: 18px; line-height: 1.7; }}
+  .ts-scout-plus {{ color: {PALETTE["positive"]}; }}
+  .ts-scout-minus {{ color: {PALETTE["warning"]}; }}
   .ts-price {{ font-size: 30px; font-weight: 800; direction: ltr;
       color: {PALETTE["text"]}; margin: 12px 0 4px; }}
 </style>
@@ -1914,6 +1925,71 @@ def standing_approval(client_id: str, session, picks: list, pick, armed: bool) -
         save(preapproved_on=day.isoformat(), max_amount=min(amount, PREAPPROVAL_MAX))
 
 
+def scout_card(report) -> str:
+    sector = f" · {esc(report.sector)}" if report.sector else ""
+    items = "".join(
+        f'<li class="ts-scout-plus">{esc(text)}</li>' for text in report.strengths
+    ) + "".join(f'<li class="ts-scout-minus">{esc(text)}</li>' for text in report.weaknesses)
+    return (
+        f'<div class="ts-scout"><div class="ts-scout-head">'
+        f'<div class="ts-grade ts-grade-{esc(report.grade)}">{esc(report.grade)}</div>'
+        f'<div><b>{esc(report.symbol)}</b> · {esc(report.name)}{sector}'
+        f'<div class="ts-agent-when">{ltr(money(report.price))} · ציון {report.score:.0f} מתוך 100</div>'
+        f'</div></div><ul>{items}</ul></div>'
+    )
+
+
+def tab_scout(client_id: str, session, armed: bool) -> None:
+    """The talent scout's shortlist for the coming trading day."""
+    from zoneinfo import ZoneInfo
+
+    from tradesys.agents.talent_scout import load_reports
+    from tradesys.clients.picks import MAX_PICKS, approval_day, read_picks
+    from tradesys.core.errors import ConfigError
+
+    st.markdown("###### 🔭 הסקאוט: מניות ששוות מבט")
+    st.caption(
+        "כמו סקאוט בכדורגל: כל ערב אחרי סגירת המסחר הוא עובר על המובילות, על המניות "
+        "הכי נסחרות ועל אלה שזינקו היום, ובודק כושר, חוזק מול המדד, חדשות, אנליסטים, "
+        "צמיחה וסיכון. הוא לא קונה לבד: מניה שתוסיף ל\"המניות שלי\" עוברת את שומר "
+        "הסיכון כמו כל רעיון. הציון הוא סינון שחוסך לך זמן, לא תחזית."
+    )
+    found = load_reports(get_system().settings.data_dir, approval_day(datetime.now(timezone.utc)))
+    if found is None:
+        st.info("הסקאוט יוצא לסיבוב כל ערב אחרי סגירת המסחר. הדוח הראשון יופיע כאן אחרי הסיבוב הבא.")
+        return
+    made_at, reports = found
+    when = datetime.fromisoformat(made_at).astimezone(ZoneInfo("Asia/Jerusalem"))
+    st.caption(f"הדוח הוכן ב-{when:%d/%m %H:%M} (שעון ישראל) · A מצוינת · B טובה · C סבירה")
+
+    picks = read_picks(session.tenant.data_dir)
+    chosen = {p.symbol for p in picks}
+    for report in reports:
+        st.markdown(scout_card(report), unsafe_allow_html=True)
+        news_col, button_col = st.columns([4, 1])
+        if report.headlines:
+            with news_col.expander("כותרות מהשבוע"):
+                for headline in report.headlines:
+                    st.markdown(f'<div dir="ltr">{esc(headline)}</div>', unsafe_allow_html=True)
+        if button_col.button(
+            "נבחרה" if report.symbol in chosen else "➕ הוסף",
+            disabled=not armed or report.symbol in chosen or len(picks) >= MAX_PICKS,
+            width="stretch",
+            key=f"scout_add_{client_id}_{report.symbol}",
+        ):
+            try:
+                add_pick(session, picks, report.symbol)
+                invalidate()
+                st.rerun()
+            except ConfigError as exc:
+                st.error(str(exc))
+            except Exception:  # a market-data failure must not break the tab
+                st.error("לא הצלחנו לבדוק את המניה כרגע. נסה שוב בעוד דקה.")
+    if len(picks) >= MAX_PICKS:
+        st.caption(f"הגעת למקסימום של {MAX_PICKS} מניות. הסר אחת ב\"שליטה וסיכון\" כדי להוסיף אחרת.")
+    locked_hint(armed)
+
+
 def proposals_banner(client_id: str, session, armed: bool) -> None:
     """The robot's requests to buy an "ask first" pick, with approve and decline."""
     from tradesys.clients.proposals import pending
@@ -2388,6 +2464,7 @@ def client_portal(client_id: str, demo: bool = False) -> None:
         [
             "הבית",
             "שליטה וסיכון",
+            "🔭 הסקאוט",
             "גרפים",
             "פעילות הסוכנים",
             "חיבור ברוקר",
@@ -2404,14 +2481,16 @@ def client_portal(client_id: str, demo: bool = False) -> None:
     with tabs[1]:
         tab_protection(client_id, snapshot, session, armed)
     with tabs[2]:
-        tab_charts(client_id, snapshot, session)
+        tab_scout(client_id, session, armed)
     with tabs[3]:
-        tab_agents(snapshot, session, armed)
+        tab_charts(client_id, snapshot, session)
     with tabs[4]:
-        tab_broker(client_id, demo)
+        tab_agents(snapshot, session, armed)
     with tabs[5]:
-        tab_billing(client_id, snapshot, demo)
+        tab_broker(client_id, demo)
     with tabs[6]:
+        tab_billing(client_id, snapshot, demo)
+    with tabs[7]:
         tab_controls(client_id, snapshot, session, armed, demo)
 
     if (

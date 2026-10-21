@@ -93,6 +93,9 @@ class AssetDirectory:
                 write_json_atomic(self._path, self._assets)
         return self._assets
 
+    def name(self, symbol: str) -> str | None:
+        return self._load().get(symbol)
+
     def search(self, query: str, limit: int = 10) -> list[AssetHit]:
         text = query.strip()
         if not text:
