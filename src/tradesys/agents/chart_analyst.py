@@ -58,6 +58,7 @@ class ChartReading:
     stop: float
     target: float | None
     plan: str = ""
+    breakout: float = 0.0    # the 3-month high: a close above it on heavy volume is a breakout
     facts: list[str] = field(default_factory=list)
     evidence: Evidence | None = None
 
@@ -218,6 +219,7 @@ def analyze(symbol: str, bars: Sequence[Bar]) -> ChartReading | None:
         stop=stop,
         target=target,
         plan=plan,
+        breakout=max(s.close[i - 63:i]),
         facts=facts,
         evidence=_evidence(s, signal),
     )

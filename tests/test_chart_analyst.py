@@ -49,7 +49,9 @@ def test_a_new_high_on_heavy_volume_is_a_breakout():
     closes.append(max(closes) * 1.02)
     volumes = [1_000_000.0] * 300 + [3_000_000.0]
 
-    assert analyze("POP", bars(closes, volumes)).signal == "breakout"
+    reading = analyze("POP", bars(closes, volumes))
+    assert reading.signal == "breakout"
+    assert reading.breakout == max(closes[-64:-1])
 
 
 def test_a_steep_climb_says_wait_for_a_dip():

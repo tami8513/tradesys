@@ -880,6 +880,7 @@ def price_chart(
     overlays: list[dict],
     story: list[dict],
     benchmark: pd.DataFrame | None = None,
+    marks=None,
 ) -> go.Figure:
     lower = [panel for panel in ("מחזור", "RSI") if panel in tools]
     heights = {0: [1.0], 1: [0.78, 0.22], 2: [0.62, 0.19, 0.19]}[len(lower)]
@@ -972,6 +973,34 @@ def price_chart(
                 ),
                 row=1, col=1,
             )
+    if marks is not None:
+        low, high = marks.entry_zone
+        fig.add_hrect(
+            y0=low, y1=high, fillcolor="rgba(38,208,124,.14)", line_width=0,
+            annotation_text=f"אזור כניסה {low:,.2f}-{high:,.2f}", annotation_position="top left",
+            annotation_font_color=PALETTE["positive"], row=1, col=1,
+        )
+        lines = [
+            (marks.breakout, PALETTE["gold"], "dash", f"⚡ נקודת פריצה {marks.breakout:,.2f}", "top right"),
+            (marks.stop, PALETTE["negative"], "dot", f"🛡 הגנה {marks.stop:,.2f}", "bottom left"),
+        ]
+        if marks.target:
+            lines.append((marks.target, PALETTE["positive"], "dot", f"🎯 יעד {marks.target:,.2f}", "top left"))
+        for value, colour, dash, text, where in lines:
+            fig.add_hline(
+                y=value, line=dict(color=colour, width=1.6, dash=dash),
+                annotation_text=text, annotation_position=where,
+                annotation_font_color=colour, row=1, col=1,
+            )
+        fig.add_trace(
+            go.Scatter(
+                x=[x.iloc[-1]], y=[marks.price], mode="markers", name="🔬 כאן הרובוט בדק",
+                marker=dict(symbol="star", size=16, color=PALETTE["gold"],
+                            line=dict(color=PALETTE["bg"], width=1)),
+                text=[marks.headline], hovertemplate="%{text}<extra></extra>",
+            ),
+            row=1, col=1,
+        )
     row = 2
     if "מחזור" in tools:
         up = frame["close"] >= frame["open"]
@@ -1643,21 +1672,27 @@ def send_robot_box(client_id: str, session, symbol: str, answer, lab, armed: boo
     locked_hint(armed)
 
 
+def run_deep(client_id: str, symbol: str) -> None:
+    """Runs on the click, before the page redraws, so the chart already shows the marks."""
+    with st.spinner("בודק גרף, 5 שנים של היסטוריה, חדשות ואנליסטים…"):
+        try:
+            st.session_state[f"deep_{symbol}"] = deep_inputs(
+                client_id, symbol, datetime.now(timezone.utc).date().isoformat()
+            )
+        except Exception:  # an outage must not break the chart tab
+            st.session_state[f"deep_failed_{symbol}"] = True
+
+
 def deep_panel(client_id: str, session, symbol: str, armed: bool) -> None:
     """A button on every chart: the full analysis, a recommendation, and sending the robot."""
     from tradesys.agents.strategy_lab import score
     from tradesys.orchestration.deep_analysis import verdict
 
     key = f"deep_{symbol}"
-    if st.button(f"🔬 נתח את {symbol} לעומק והמלץ", key=f"deep_run_{client_id}_{symbol}",
-                 width="stretch"):
-        with st.spinner("בודק גרף, 5 שנים של היסטוריה, חדשות ואנליסטים…"):
-            try:
-                st.session_state[key] = deep_inputs(
-                    client_id, symbol, datetime.now(timezone.utc).date().isoformat()
-                )
-            except Exception:  # an outage must not break the chart tab
-                st.error("הניתוח לא זמין כרגע. נסה שוב בעוד דקה.")
+    st.button(f"🔬 נתח את {symbol} לעומק והמלץ", key=f"deep_run_{client_id}_{symbol}",
+              width="stretch", on_click=run_deep, args=(client_id, symbol))
+    if st.session_state.pop(f"deep_failed_{symbol}", False):
+        st.error("הניתוח לא זמין כרגע. נסה שוב בעוד דקה.")
     inputs = st.session_state.get(key)
     if not inputs:
         return
@@ -1784,12 +1819,29 @@ def tab_charts(client_id: str, snapshot: dict, session, armed: bool) -> None:
     gaps = [] if range_key in WEEKLY else [dict(bounds=["sat", "mon"])]
     if range_key in INTRADAY:
         gaps.append(dict(bounds=[16, 9.5], pattern="hour"))
+    analysis = st.session_state.get(f"deep_{symbol}")
+    marks = analysis["reading"] if analysis else None
     st.plotly_chart(
         price_chart(frame, symbol, labels, style=style, tools=tools, log_scale=log_scale,
-                    gaps=gaps, overlays=overlays, story=story, benchmark=benchmark),
+                    gaps=gaps, overlays=overlays, story=story, benchmark=benchmark, marks=marks),
         width="stretch",
         config=chart_config(symbol),
     )
+    if marks is not None:
+        low, high = marks.entry_zone
+        target = f"<li>🎯 <b>קו ירוק מנוקד</b>: היעד הראשון, {ltr(money(marks.target))}.</li>" if marks.target else ""
+        st.markdown(
+            '<div class="ts-brief"><div class="ts-brief-title">🔬 מה הרובוט סימן על הגרף</div><ul>'
+            f"<li>⚡ <b>קו זהב מקווקו</b>: נקודת הפריצה, {ltr(money(marks.breakout))}. זה השיא של "
+            "3 החודשים האחרונים. אם המניה תיסגר מעליו ביום עם מסחר ער, זו פריצה.</li>"
+            f"<li>🟩 <b>רצועה ירוקה</b>: אזור הכניסה, {ltr(money(low))} עד {ltr(money(high))}.</li>"
+            f"<li>🛡 <b>קו אדום מנוקד</b>: ההגנה (הסטופ), {ltr(money(marks.stop))}. אם המחיר יורד "
+            "אליו, יוצאים כדי לעצור את ההפסד.</li>"
+            f"{target}"
+            "<li>⭐ <b>כוכב</b>: היום שבו הרובוט בדק. העבר עליו את העכבר לקבלת הסיכום.</li>"
+            "</ul></div>",
+            unsafe_allow_html=True,
+        )
     st.caption(
         "סרגל הכלים בפינת הגרף: ציור קווי מגמה ומלבנים, מחיקה, זום וגלילה, ושמירת הגרף כתמונה. "
         "גרירה מזיזה את הגרף, גלגלת העכבר מגדילה."
