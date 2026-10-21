@@ -45,6 +45,7 @@ def scout_market(settings: Settings, day: date) -> list[ScoutReport]:
         analysts=feeds.analysts,
         growth=feeds.growth,
         earnings_in_days=feeds.earnings_in_days,
+        short_interest=feeds.short_interest,
     )
     reports = scout.shortlist(UNIVERSES["leaders"], benchmark_6m)
     save_reports(settings.data_dir, day, reports)

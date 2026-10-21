@@ -232,6 +232,7 @@ CSS = f"""
   .ts-grade-A {{ background: {PALETTE["positive"]}; }}
   .ts-grade-B {{ background: {PALETTE["gold"]}; }}
   .ts-grade-C {{ background: {PALETTE["muted"]}; }}
+  .ts-grade-S {{ background: {PALETTE["warning"]}; font-size: 16px; }}
   .ts-scout ul {{ margin: 8px 0 0; padding-inline-start: 18px; line-height: 1.7; }}
   .ts-scout-plus {{ color: {PALETTE["positive"]}; }}
   .ts-scout-minus {{ color: {PALETTE["warning"]}; }}
@@ -1783,7 +1784,7 @@ def get_asset_directory():
     return AssetDirectory(settings.data_dir / "_platform", fetch)
 
 
-def add_pick(session, picks: list, ticker: str) -> None:
+def add_pick(session, picks: list, ticker: str, ask_first: bool = False) -> None:
     """Validate a ticker against market data, then save it as a pick."""
     from tradesys.clients.picks import Pick, normalize, write_picks
     from tradesys.core.errors import ConfigError
@@ -1792,7 +1793,7 @@ def add_pick(session, picks: list, ticker: str) -> None:
     bars = session.market_data.history(ticker, timeframe="1Day", limit=60)
     if len(bars) < 60:
         raise ConfigError(f"לא נמצאו מספיק נתוני מסחר עבור {ticker}")
-    write_picks(session.tenant.data_dir, [*picks, Pick(ticker)])
+    write_picks(session.tenant.data_dir, [*picks, Pick(ticker, ask_first=ask_first)])
 
 
 def my_stocks(client_id: str, session, armed: bool) -> None:
@@ -1930,11 +1931,14 @@ def scout_card(report) -> str:
     items = "".join(
         f'<li class="ts-scout-plus">{esc(text)}</li>' for text in report.strengths
     ) + "".join(f'<li class="ts-scout-minus">{esc(text)}</li>' for text in report.weaknesses)
+    long_shot = report.grade == "S"
+    badge = "🚀" if long_shot else esc(report.grade)
+    rating = "הימור" if long_shot else f"ציון {report.score:.0f} מתוך 100"
     return (
         f'<div class="ts-scout"><div class="ts-scout-head">'
-        f'<div class="ts-grade ts-grade-{esc(report.grade)}">{esc(report.grade)}</div>'
+        f'<div class="ts-grade ts-grade-{esc(report.grade)}">{badge}</div>'
         f'<div><b>{esc(report.symbol)}</b> · {esc(report.name)}{sector}'
-        f'<div class="ts-agent-when">{ltr(money(report.price))} · ציון {report.score:.0f} מתוך 100</div>'
+        f'<div class="ts-agent-when">{ltr(money(report.price))} · {rating}</div>'
         f'</div></div><ul>{items}</ul></div>'
     )
 
@@ -1964,7 +1968,18 @@ def tab_scout(client_id: str, session, armed: bool) -> None:
 
     picks = read_picks(session.tenant.data_dir)
     chosen = {p.symbol for p in picks}
-    for report in reports:
+    regulars = [r for r in reports if r.grade != "S"]
+    long_shots = [r for r in reports if r.grade == "S"]
+    for report in regulars + long_shots:
+        long_shot = report.grade == "S"
+        if long_shot and report is long_shots[0]:
+            st.markdown("###### 🚀 הימורים: מניות זולות עם חדשות מעולות ושורט גבוה")
+            st.warning(
+                "מניות בין 1 ל-5 דולר. הן נכנסות לרשימה רק כשיש עליהן חדשות מעולות וגם הרבה "
+                "משקיעים מהמרים נגדן (שורט). אם החדשות ממשיכות, המהמרים נגד נאלצים לקנות "
+                "בחזרה והמחיר יכול לזנק. אבל הן גם יכולות לצנוח באותה מהירות. מניה כזו "
+                "שתוסיף תסומן אוטומטית ב\"✋ לשאול אותי\", כדי שהרובוט לא יקנה בלי אישורך."
+            )
         st.markdown(scout_card(report), unsafe_allow_html=True)
         news_col, button_col = st.columns([4, 1])
         if report.headlines:
@@ -1978,7 +1993,7 @@ def tab_scout(client_id: str, session, armed: bool) -> None:
             key=f"scout_add_{client_id}_{report.symbol}",
         ):
             try:
-                add_pick(session, picks, report.symbol)
+                add_pick(session, picks, report.symbol, ask_first=long_shot)
                 invalidate()
                 st.rerun()
             except ConfigError as exc:

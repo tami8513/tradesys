@@ -22,6 +22,10 @@ NEWS_DAYS = 7
 NEWS_PAGES = 5
 # Finnhub's free plan allows 60 calls a minute.
 FINNHUB_PAUSE_SECONDS = 1.1
+# FINRA publishes short interest twice a month, about a week after each count.
+FINRA_SHORT_URL = "https://api.finra.org/data/group/otcMarket/name/consolidatedShortInterest"
+SHORT_LOOKBACK_DAYS = 45
+FINRA_BATCH = 100
 
 
 def alpaca_assets(key_id: str, secret_key: str) -> Callable[[], list[dict]]:
@@ -137,3 +141,37 @@ class ScoutingFeeds:
         today = date.today()
         upcoming = self._earnings.lookup(symbol, today).next_date
         return (upcoming - today).days if upcoming else None
+
+    def short_interest(self, symbols: list[str]) -> dict[str, dict]:
+        """The latest short-interest count per symbol, from FINRA's public data."""
+        start = (date.today() - timedelta(days=SHORT_LOOKBACK_DAYS)).isoformat()
+        latest: dict[str, dict] = {}
+        try:
+            for i in range(0, len(symbols), FINRA_BATCH):
+                response = httpx.post(
+                    FINRA_SHORT_URL,
+                    json={
+                        "limit": 5000,
+                        "fields": ["symbolCode", "settlementDate", "daysToCoverQuantity",
+                                   "changePercent"],
+                        "dateRangeFilters": [{"fieldName": "settlementDate", "startDate": start,
+                                              "endDate": date.today().isoformat()}],
+                        "domainFilters": [{"fieldName": "symbolCode",
+                                           "values": symbols[i:i + FINRA_BATCH]}],
+                    },
+                    headers={"Accept": "application/json"},
+                    timeout=30,
+                )
+                response.raise_for_status()
+                for row in response.json() or []:
+                    symbol, when = str(row["symbolCode"]), str(row["settlementDate"])
+                    if symbol in latest and latest[symbol]["as_of"] >= when:
+                        continue
+                    latest[symbol] = {
+                        "as_of": when,
+                        "days_to_cover": float(row.get("daysToCoverQuantity") or 0.0),
+                        "change_pct": float(row.get("changePercent") or 0.0),
+                    }
+        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            pass
+        return latest

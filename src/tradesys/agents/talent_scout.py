@@ -2,10 +2,14 @@
 
 Like a football scout it does not buy anyone. It watches a wide pool (the
 approved universe, today's most-traded names and today's biggest gainers), drops
-what is not worth a look (cheap, thin, warrants, leveraged funds, falling), and
-writes a short report on the most promising: current form, strength against the
-market, what the news says, what analysts say, the company's growth, and the
-injury risk (volatility, an earnings report days away).
+what is not worth a look (thin, warrants, leveraged funds, falling), and writes a
+short report on the most promising: current form, strength against the market,
+what the news says, what analysts say, the company's growth, and the injury risk
+(volatility, an earnings report days away).
+
+Stocks between $1 and $5 get a separate, stricter lane, the long shots: they
+qualify only on excellent news while short sellers hold a large position, the
+setup in which buying back those shorts can push the price up fast.
 
 Every grade is a transparent blend of measured facts, scored against the rest of
 the pool. It is a filter that saves the client time, not a forecast: the same
@@ -30,6 +34,12 @@ MIN_PRICE = 5.0
 MIN_DOLLAR_VOLUME = 20_000_000.0
 DEEP_LOOK = 40           # names that get news, analyst and growth checks
 SHORTLIST = 10
+LONG_SHOT_MIN_PRICE = 1.0
+LONG_SHOT_MIN_DOLLAR_VOLUME = 10_000_000.0
+LONG_SHOT_MIN_DAYS_TO_COVER = 3.0    # trading days the shorts need to buy back
+LONG_SHOT_MIN_STORIES = 2
+LONG_SHOT_MIN_TONE = 3
+LONG_SHOTS = 5
 WEIGHTS = {"form": 30, "relative": 20, "news": 15, "analysts": 20, "growth": 15}
 _TICKER = re.compile(r"^[A-Z]{1,5}$")
 # On Nasdaq a fifth letter W, U, R or Q marks a warrant, unit, right or bankruptcy.
@@ -103,6 +113,15 @@ def _grade(score: float) -> str:
     return "A" if score >= 75 else "B" if score >= 60 else "C"
 
 
+def _text(item: dict) -> str:
+    return (item.get("headline", "") + " " + item.get("summary", "")).lower()
+
+
+def _red_flags(items: list[dict]) -> list[str]:
+    found = sorted(set(_RED_FLAGS.findall(" ".join(_text(n) for n in items))))
+    return list(dict.fromkeys(RED_FLAGS[flag] for flag in found))
+
+
 class TalentScout:
     def __init__(
         self,
@@ -114,6 +133,7 @@ class TalentScout:
         analysts: Callable[[str], dict | None] = lambda symbol: None,
         growth: Callable[[str], dict | None] = lambda symbol: None,
         earnings_in_days: Callable[[str], int | None] = lambda symbol: None,
+        short_interest: Callable[[list[str]], dict[str, dict]] = lambda symbols: {},
     ) -> None:
         self._market = market_data
         self._names = names
@@ -122,6 +142,7 @@ class TalentScout:
         self._analysts = analysts
         self._growth = growth
         self._earnings_in_days = earnings_in_days
+        self._short_interest = short_interest
 
     # ------------------------------------------------------------- the pool
 
@@ -135,47 +156,60 @@ class TalentScout:
         )
 
     def _form(self, symbol: str) -> dict | None:
-        """Technical form, or None when the name is not worth a deeper look."""
+        """Technical form and the lane the name qualifies for, or None for neither."""
         try:
             bars = self._market.history(symbol, timeframe="1Day", limit=220)
         except Exception:  # an unreadable name is skipped, not fatal
             return None
-        if len(bars) < 200:
+        if len(bars) < 63:
             return None
         values = closes(bars)
         last, sma50, sma200 = values[-1], sma(values, 50), sma(values, 200)
         dollar_volume = sum(b.close * b.volume for b in bars[-20:]) / 20
-        if last < MIN_PRICE or dollar_volume < MIN_DOLLAR_VOLUME or not last > sma50 > sma200:
+        if last >= MIN_PRICE:
+            if dollar_volume < MIN_DOLLAR_VOLUME or sma200 is None or not last > sma50 > sma200:
+                return None
+            lane = "main"
+        elif last >= LONG_SHOT_MIN_PRICE and dollar_volume >= LONG_SHOT_MIN_DOLLAR_VOLUME:
+            lane = "long_shot"
+        else:
             return None
         return {
+            "lane": lane,
             "price": last,
             "r3m": (last / values[-63] - 1) * 100,
-            "r6m": (last / values[-126] - 1) * 100,
+            "r6m": (last / values[-126] - 1) * 100 if len(values) >= 126 else 0.0,
             "atr_pct": (atr(bars) or 0.0) / last * 100,
             "extended": (last / sma50 - 1) * 100,
         }
 
+    def _stories(self, symbols: list[str]) -> dict[str, list[dict]]:
+        stories: dict[str, list[dict]] = {s: [] for s in symbols}
+        for item in self._news(symbols) if symbols else []:
+            for symbol in item.get("symbols", []):
+                if symbol in stories:
+                    stories[symbol].append(item)
+        return stories
+
     # ----------------------------------------------------------- the report
 
     def shortlist(self, universe: Sequence[str], benchmark_6m: float) -> list[ScoutReport]:
+        """The best regular names first, then the long shots (grade S)."""
         pool = sorted({s for s in [*universe, *self._movers()] if self._eligible(s)})
         forms = {s: f for s in pool if (f := self._form(s)) is not None}
+        main = {s: f for s, f in forms.items() if f["lane"] == "main"}
+        cheap = {s: f for s, f in forms.items() if f["lane"] == "long_shot"}
+        return self._regulars(main, benchmark_6m) + self._long_shots(cheap)
+
+    def _regulars(self, forms: dict[str, dict], benchmark_6m: float) -> list[ScoutReport]:
         if not forms:
             return []
-
         form_rank = _percentiles({s: (f["r3m"] + f["r6m"]) / 2 for s, f in forms.items()})
         deep = sorted(forms, key=form_rank.get, reverse=True)[:DEEP_LOOK]
         relative = _percentiles({s: forms[s]["r6m"] - benchmark_6m for s in deep})
 
-        stories: dict[str, list[dict]] = {s: [] for s in deep}
-        for item in self._news(deep):
-            for symbol in item.get("symbols", []):
-                if symbol in stories:
-                    stories[symbol].append(item)
-        news_raw = {
-            s: sum(_sentiment(n.get("headline", "") + " " + n.get("summary", "")) for n in items)
-            for s, items in stories.items()
-        }
+        stories = self._stories(deep)
+        news_raw = {s: sum(_sentiment(_text(n)) for n in items) for s, items in stories.items()}
         news_rank = _percentiles(news_raw)
 
         reports = []
@@ -209,6 +243,50 @@ class TalentScout:
             reports.append(report)
         return sorted(reports, key=lambda r: r.score, reverse=True)[:SHORTLIST]
 
+    def _long_shots(self, forms: dict[str, dict]) -> list[ScoutReport]:
+        """Cheap names with excellent news while short sellers are heavily exposed."""
+        shorts = self._short_interest(sorted(forms)) if forms else {}
+        exposed = [
+            s for s in sorted(forms)
+            if (shorts.get(s) or {}).get("days_to_cover", 0.0) >= LONG_SHOT_MIN_DAYS_TO_COVER
+        ]
+        stories = self._stories(exposed)
+        reports = []
+        for symbol in exposed:
+            items = stories[symbol]
+            tone = sum(_sentiment(_text(n)) for n in items)
+            if len(items) < LONG_SHOT_MIN_STORIES or tone < LONG_SHOT_MIN_TONE or _red_flags(items):
+                continue
+            form, short = forms[symbol], shorts[symbol]
+            report = ScoutReport(
+                symbol=symbol,
+                name=self._names(symbol) or symbol,
+                sector=sector_label(symbol) if symbol in SECTORS else "",
+                price=form["price"],
+                grade="S",
+                score=float(tone),
+                parts={"days_to_cover": short["days_to_cover"]},
+                headlines=[n.get("headline", "") for n in items[:3]],
+            )
+            report.strengths.append(f"חדשות מעולות: {len(items)} כתבות השבוע, הטון חיובי מאוד")
+            report.strengths.append(
+                f"הרבה משקיעים מהמרים על ירידה (שורט): כדי לקנות בחזרה הם צריכים "
+                f"{short['days_to_cover']:.1f} ימי מסחר. חדשות טובות עלולות לאלץ אותם "
+                "לקנות מהר ולהאיץ את העלייה"
+            )
+            change = short.get("change_pct")
+            if isinstance(change, (int, float)) and abs(change) >= 10:
+                direction = "גדל" if change > 0 else "קטן"
+                report.strengths.append(f"השורט {direction} ב-{abs(change):.0f}% בספירה האחרונה")
+            report.weaknesses.append(
+                "מניה זולה (מתחת ל-5 דולר): קפיצות חדות לשני הכיוונים. הימור, לא השקעה. "
+                "רק סכום קטן"
+            )
+            self._describe_risk(report, form)
+            reports.append(report)
+        reports.sort(key=lambda r: (r.score, r.parts["days_to_cover"]), reverse=True)
+        return reports[:LONG_SHOTS]
+
     @staticmethod
     def _describe_form(report: ScoutReport, form: dict, benchmark_6m: float) -> float:
         report.strengths.append(
@@ -231,8 +309,7 @@ class TalentScout:
         if not items:
             report.weaknesses.append("כמעט אין עליה חדשות השבוע, השוק לא מסתכל עליה")
             return 0.0
-        text = " ".join((n.get("headline", "") + " " + n.get("summary", "")).lower() for n in items)
-        flags = list(dict.fromkeys(RED_FLAGS[f] for f in sorted(set(_RED_FLAGS.findall(text)))))
+        flags = _red_flags(items)
         if flags:
             report.weaknesses.append(f"דגל אדום בחדשות: {', '.join(flags)}")
         if tone > 0:

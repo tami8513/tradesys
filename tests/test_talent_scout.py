@@ -151,3 +151,36 @@ def test_the_nightly_round_runs_once_per_trading_day(tmp_path):
     save_reports(tmp_path, day, [])
     assert not scout_due(settings, day)
     assert not scout_due(with_(settings, market_data_key_id=""), date(2026, 10, 23))
+
+
+GOOD_NEWS = [
+    {"headline": "PENNY wins record contract", "summary": "", "symbols": ["PENNY"]},
+    {"headline": "PENNY shares surge after FDA approval", "summary": "", "symbols": ["PENNY"]},
+]
+
+
+def long_shots(news=GOOD_NEWS, days_to_cover=6.0):
+    reports = scout(
+        news=lambda symbols: [n for n in news if set(n["symbols"]) & set(symbols)],
+        short_interest=lambda symbols: {
+            s: {"days_to_cover": days_to_cover, "change_pct": 25.0} for s in symbols
+        },
+    ).shortlist(["FAST", "PENNY"], 5.0)
+    return [r for r in reports if r.grade == "S"], reports
+
+
+def test_a_cheap_stock_with_great_news_and_heavy_shorting_is_a_long_shot():
+    shots, reports = long_shots()
+
+    assert [r.symbol for r in shots] == ["PENNY"]
+    assert reports[-1].symbol == "PENNY"     # after the regular names
+    assert any("6.0 ימי מסחר" in s for s in shots[0].strengths)
+    assert any("השורט גדל ב-25%" in s for s in shots[0].strengths)
+    assert any("הימור, לא השקעה" in w for w in shots[0].weaknesses)
+
+
+def test_a_long_shot_needs_both_great_news_and_heavy_shorting():
+    assert long_shots(days_to_cover=2.0)[0] == []
+    assert long_shots(news=GOOD_NEWS[:1])[0] == []
+    flagged = [*GOOD_NEWS, {"headline": "PENNY plans stock offering", "summary": "", "symbols": ["PENNY"]}]
+    assert long_shots(news=flagged)[0] == []
