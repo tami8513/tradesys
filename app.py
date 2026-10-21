@@ -236,6 +236,27 @@ CSS = f"""
   .ts-scout ul {{ margin: 8px 0 0; padding-inline-start: 18px; line-height: 1.7; }}
   .ts-scout-plus {{ color: {PALETTE["positive"]}; }}
   .ts-scout-minus {{ color: {PALETTE["warning"]}; }}
+  .st-key-chart_toolbar div[data-testid="stHorizontalBlock"],
+  .st-key-chart_cols div[data-testid="stHorizontalBlock"] {{ direction: rtl; flex-direction: row; }}
+  .st-key-chart_toolbar {{ background: {PALETTE["panel"]}; }}
+  .ts-indices {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 10px; margin-bottom: 14px; }}
+  .ts-index {{ background: {PALETTE["panel"]}; border: 1px solid {PALETTE["border"]};
+      border-right: 3px solid {PALETTE["muted"]}; border-radius: 12px; padding: 10px 12px; }}
+  .ts-index-enter, .ts-analyst-enter {{ border-right-color: {PALETTE["positive"]}; }}
+  .ts-index-maybe, .ts-analyst-maybe {{ border-right-color: {PALETTE["gold"]}; }}
+  .ts-index-wait, .ts-analyst-wait {{ border-right-color: {PALETTE["warning"]}; }}
+  .ts-index-avoid, .ts-analyst-avoid {{ border-right-color: {PALETTE["negative"]}; }}
+  .ts-index-name {{ font-size: 12px; color: {PALETTE["muted"]}; font-weight: 700; }}
+  .ts-index-price {{ font-size: 17px; font-weight: 800; margin: 2px 0; }}
+  .ts-index-verdict {{ font-size: 12px; line-height: 1.45; }}
+  .ts-up {{ color: {PALETTE["positive"]}; font-weight: 700; }}
+  .ts-down {{ color: {PALETTE["negative"]}; font-weight: 700; }}
+  .ts-quote {{ margin: 14px 0 4px; }}
+  .ts-quote-name {{ font-size: 14px; color: {PALETTE["muted"]}; }}
+  .ts-quote-row {{ display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }}
+  .ts-quote-price {{ font-size: 30px; font-weight: 800; }}
+  .ts-quote-range {{ font-size: 12px; color: {PALETTE["muted"]}; }}
   .ts-price {{ font-size: 30px; font-weight: 800; direction: ltr;
       color: {PALETTE["text"]}; margin: 12px 0 4px; }}
 </style>
@@ -702,30 +723,77 @@ def load_snapshot(client_id: str, bust: int) -> dict:
     }
 
 
-@st.cache_data(ttl=30, show_spinner=False)
-def load_bars(client_id: str, symbol: str, bust: int) -> pd.DataFrame:
+CHART_STYLES = ("נרות", "קו", "שטח")
+CHART_TOOLS = ("ממוצעים", "בולינגר", "מחזור", "RSI", "השוואה ל-S&P 500")
+ACTION_ICONS = {"enter": "✅", "maybe": "🟡", "wait": "⏳", "avoid": "⛔"}
+
+
+# cache_resource, not cache_data: bars are read-only, and pickling them breaks
+# whenever Streamlit reloads the module that defines them.
+@st.cache_resource(ttl=3600, show_spinner=False)
+def load_daily_history(client_id: str, symbol: str, bust: int) -> list:
+    from tradesys.data.chart_ranges import TEN_YEARS_OF_DAYS
+
     del bust
-    session = get_session(client_id)
-    bars = session.market_data.history(
-        symbol, timeframe=session.profile.timeframe, limit=session.profile.lookback_bars
+    return get_session(client_id).market_data.history(
+        symbol, timeframe="1Day", limit=TEN_YEARS_OF_DAYS
     )
+
+
+@st.cache_resource(ttl=60, show_spinner=False)
+def load_intraday(client_id: str, symbol: str, range_key: str, bust: int) -> list:
+    from tradesys.data.chart_ranges import INTRADAY, regular_session
+
+    del bust
+    timeframe, sessions, limit = INTRADAY[range_key]
+    bars = get_session(client_id).market_data.history(symbol, timeframe=timeframe, limit=limit)
+    return regular_session(bars, sessions)
+
+
+@st.cache_resource(ttl=3600, show_spinner=False)
+def analyst_reading(client_id: str, symbol: str, bust: int):
+    from tradesys.agents.chart_analyst import analyze
+
+    return analyze(symbol, load_daily_history(client_id, symbol, bust))
+
+
+def chart_frame(client_id: str, symbol: str, range_key: str) -> tuple[pd.DataFrame, dict[str, str]]:
+    """Bars for one range with indicators computed before trimming, so they start warm."""
+    from tradesys.data.chart_ranges import DAILY, INTRADAY, NEW_YORK, WEEKLY, weekly
+
+    bust = st.session_state.get("_bust", 0)
+    if range_key in INTRADAY:
+        bars, span = load_intraday(client_id, symbol, range_key, bust), None
+        averages = {20: "ממוצע 20 נרות"}
+    else:
+        daily = load_daily_history(client_id, symbol, bust)
+        if range_key in WEEKLY:
+            bars, span = weekly(daily), WEEKLY[range_key]
+            averages = {10: "ממוצע 10 שבועות", 40: "ממוצע 40 שבועות"}
+        else:
+            bars, span = daily, DAILY[range_key]
+            averages = {20: "ממוצע 20 יום", 50: "ממוצע 50 יום", 200: "ממוצע 200 יום"}
     frame = pd.DataFrame(
-        [
-            {
-                "ts": b.ts,
-                "open": b.open,
-                "high": b.high,
-                "low": b.low,
-                "close": b.close,
-                "volume": b.volume,
-            }
-            for b in bars
-        ]
+        [{"ts": b.ts, "open": b.open, "high": b.high, "low": b.low, "close": b.close,
+          "volume": b.volume} for b in bars]
     )
-    if not frame.empty:
-        frame["sma20"] = frame["close"].rolling(20).mean()
-        frame["sma50"] = frame["close"].rolling(50).mean()
-    return frame
+    if frame.empty:
+        return frame, {}
+    frame["ts"] = pd.to_datetime(frame["ts"], utc=True).dt.tz_convert(NEW_YORK).dt.tz_localize(None)
+    close = frame["close"]
+    labels = {}
+    for window, label in averages.items():
+        frame[f"ma{window}"] = close.rolling(window).mean()
+        labels[f"ma{window}"] = label
+    middle, spread = close.rolling(20).mean(), close.rolling(20).std()
+    frame["bb_up"], frame["bb_low"] = middle + 2 * spread, middle - 2 * spread
+    change = close.diff()
+    gain = change.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+    loss = (-change.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+    frame["rsi"] = 100 - 100 / (1 + gain / loss)
+    if span:
+        frame = frame.tail(span).reset_index(drop=True)
+    return frame, labels
 
 
 # --------------------------------------------------------------------- גרפים
@@ -772,42 +840,90 @@ def equity_chart(closed_df: pd.DataFrame) -> go.Figure:
     return style_figure(fig, 300)
 
 
+def chart_config(symbol: str) -> dict:
+    """The toolbar inside the chart: drawing tools, zoom, and saving an image."""
+    return {
+        "displaylogo": False,
+        "scrollZoom": True,
+        "modeBarButtonsToAdd": ["drawline", "drawopenpath", "drawrect", "drawcircle", "eraseshape"],
+        "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"],
+        "toImageButtonOptions": {"filename": symbol, "scale": 2},
+    }
+
+
 def price_chart(
-    frame: pd.DataFrame, symbol: str, overlays: list[dict], story: list[dict] | None = None
+    frame: pd.DataFrame,
+    symbol: str,
+    labels: dict[str, str],
+    *,
+    style: str,
+    tools: list[str],
+    log_scale: bool,
+    gaps: list[dict],
+    overlays: list[dict],
+    story: list[dict],
+    benchmark: pd.DataFrame | None = None,
 ) -> go.Figure:
+    lower = [panel for panel in ("מחזור", "RSI") if panel in tools]
+    heights = {0: [1.0], 1: [0.78, 0.22], 2: [0.62, 0.19, 0.19]}[len(lower)]
     fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True, row_heights=[0.76, 0.24], vertical_spacing=0.04
+        rows=1 + len(lower), cols=1, shared_xaxes=True, row_heights=heights, vertical_spacing=0.03
     )
-    fig.add_trace(
-        go.Candlestick(
-            x=frame["ts"],
-            open=frame["open"],
-            high=frame["high"],
-            low=frame["low"],
-            close=frame["close"],
-            name=symbol,
-            increasing_line_color=PALETTE["positive"],
-            decreasing_line_color=PALETTE["negative"],
-            increasing_fillcolor=PALETTE["positive"],
-            decreasing_fillcolor=PALETTE["negative"],
-        ),
-        row=1,
-        col=1,
-    )
-    for column, colour, label in (
-        ("sma20", PALETTE["accent"], "ממוצע 20"),
-        ("sma50", PALETTE["gold"], "ממוצע 50"),
-    ):
+    x = frame["ts"]
+    if style == "נרות":
+        fig.add_trace(
+            go.Candlestick(
+                x=x, open=frame["open"], high=frame["high"], low=frame["low"], close=frame["close"],
+                name=symbol,
+                increasing_line_color=PALETTE["positive"], decreasing_line_color=PALETTE["negative"],
+                increasing_fillcolor=PALETTE["positive"], decreasing_fillcolor=PALETTE["negative"],
+            ),
+            row=1, col=1,
+        )
+    else:
+        rising = frame["close"].iloc[-1] >= frame["close"].iloc[0]
+        colour = PALETTE["positive"] if rising else PALETTE["negative"]
+        if style == "שטח":
+            # A floor at the range's low, so the shading does not squash the line to zero.
+            fig.add_trace(
+                go.Scatter(x=x, y=[frame["low"].min()] * len(frame), mode="lines",
+                           line=dict(width=0), hoverinfo="skip", showlegend=False),
+                row=1, col=1,
+            )
         fig.add_trace(
             go.Scatter(
-                x=frame["ts"],
-                y=frame[column],
-                mode="lines",
-                name=label,
-                line=dict(color=colour, width=1.5),
+                x=x, y=frame["close"], mode="lines", name=symbol,
+                line=dict(color=colour, width=2),
+                fill="tonexty" if style == "שטח" else None,
+                fillcolor="rgba(38,208,124,.14)" if rising else "rgba(242,84,91,.14)",
             ),
-            row=1,
-            col=1,
+            row=1, col=1,
+        )
+    if "ממוצעים" in tools:
+        for (column, label), colour in zip(labels.items(), (PALETTE["accent"], PALETTE["gold"], "#b48cf2")):
+            fig.add_trace(
+                go.Scatter(x=x, y=frame[column], mode="lines", name=label,
+                           line=dict(color=colour, width=1.4)),
+                row=1, col=1,
+            )
+    if "בולינגר" in tools:
+        fig.add_trace(
+            go.Scatter(x=x, y=frame["bb_up"], mode="lines", name="בולינגר",
+                       line=dict(color=PALETTE["muted"], width=1, dash="dot")),
+            row=1, col=1,
+        )
+        fig.add_trace(
+            go.Scatter(x=x, y=frame["bb_low"], mode="lines", showlegend=False,
+                       line=dict(color=PALETTE["muted"], width=1, dash="dot"),
+                       fill="tonexty", fillcolor="rgba(141,151,176,.07)"),
+            row=1, col=1,
+        )
+    if benchmark is not None and not benchmark.empty:
+        fig.add_trace(
+            go.Scatter(x=benchmark["ts"], y=benchmark["scaled"], mode="lines",
+                       name="S&P 500 (מאותה נקודת פתיחה)",
+                       line=dict(color="#c9d1e3", width=1.4, dash="dash")),
+            row=1, col=1,
         )
     for overlay in overlays:
         fig.add_hline(
@@ -816,8 +932,7 @@ def price_chart(
             annotation_text=overlay["label"],
             annotation_position="left",
             annotation_font_color=overlay["colour"],
-            row=1,
-            col=1,
+            row=1, col=1,
         )
     for kind, marker in (
         ("entry", dict(symbol="triangle-up", size=15, color=PALETTE["accent"])),
@@ -825,7 +940,7 @@ def price_chart(
         ("win", dict(symbol="x", size=14, color=PALETTE["positive"])),
         ("loss", dict(symbol="x", size=14, color=PALETTE["negative"])),
     ):
-        points = [point for point in story or [] if point["kind"] == kind]
+        points = [point for point in story if point["kind"] == kind]
         if points:
             fig.add_trace(
                 go.Scatter(
@@ -838,19 +953,40 @@ def price_chart(
                     text=[point["text"] for point in points],
                     hovertemplate="%{text}<extra></extra>",
                 ),
-                row=1,
-                col=1,
+                row=1, col=1,
             )
-    fig.add_trace(
-        go.Bar(x=frame["ts"], y=frame["volume"], name="מחזור",
-               marker_color=PALETTE["border"]),
-        row=2,
-        col=1,
+    row = 2
+    if "מחזור" in tools:
+        up = frame["close"] >= frame["open"]
+        fig.add_trace(
+            go.Bar(x=x, y=frame["volume"], name="מחזור", showlegend=False,
+                   marker_color=up.map({True: "rgba(38,208,124,.45)", False: "rgba(242,84,91,.45)"})),
+            row=row, col=1,
+        )
+        row += 1
+    if "RSI" in tools:
+        fig.add_trace(
+            go.Scatter(x=x, y=frame["rsi"], mode="lines", name="RSI",
+                       line=dict(color=PALETTE["gold"], width=1.4)),
+            row=row, col=1,
+        )
+        for level in (70, 30):
+            fig.add_hline(y=level, line=dict(color=PALETTE["border"], width=1, dash="dot"),
+                          row=row, col=1)
+        fig.update_yaxes(range=[0, 100], row=row, col=1)
+
+    style_figure(fig, 560 if lower else 470)
+    fig.update_layout(
+        xaxis_rangeslider_visible=False,
+        dragmode="pan",
+        newshape=dict(line=dict(color=PALETTE["gold"], width=2)),
+        modebar=dict(bgcolor="rgba(0,0,0,0)", color=PALETTE["muted"], activecolor=PALETTE["accent"]),
     )
-    fig.update_layout(xaxis_rangeslider_visible=False)
-    style_figure(fig, 500)
-    fig.update_xaxes(gridcolor=PALETTE["border"], row=2, col=1)
-    fig.update_yaxes(gridcolor=PALETTE["border"], row=2, col=1)
+    fig.update_xaxes(rangebreaks=gaps, gridcolor=PALETTE["border"], showspikes=True,
+                     spikemode="across", spikecolor=PALETTE["muted"], spikethickness=1)
+    fig.update_yaxes(gridcolor=PALETTE["border"], side="right", showspikes=True,
+                     spikecolor=PALETTE["muted"], spikethickness=1)
+    fig.update_yaxes(type="log" if log_scale else "linear", row=1, col=1)
     return fig
 
 
@@ -1177,56 +1313,243 @@ def trade_story(session, symbol: str) -> list[dict]:
     return story
 
 
+def indices_board(client_id: str) -> None:
+    """The chart analyst's daily read on the leading indices."""
+    from tradesys.agents.chart_analyst import LEADING_INDICES
+
+    bust = st.session_state.get("_bust", 0)
+    cards = []
+    for symbol, name in LEADING_INDICES:
+        try:
+            reading = analyst_reading(client_id, symbol, bust)
+            daily = load_daily_history(client_id, symbol, bust)
+        except Exception:  # one index failing to load must not hide the others
+            continue
+        if reading is None:
+            continue
+        day = (daily[-1].close / daily[-2].close - 1) * 100
+        tone = "ts-up" if day >= 0 else "ts-down"
+        cards.append(
+            f'<div class="ts-index ts-index-{reading.action}">'
+            f'<div class="ts-index-name">{esc(name)} <span dir="ltr">{esc(symbol)}</span></div>'
+            f'<div class="ts-index-price">{ltr(money(reading.price))} '
+            f'<span class="{tone}">{ltr(f"{day:+.2f}%")}</span></div>'
+            f'<div class="ts-index-verdict">{ACTION_ICONS[reading.action]} {esc(reading.headline)}</div>'
+            f"</div>"
+        )
+    if cards:
+        st.markdown(
+            '<div class="ts-section">📐 מנתח הגרפים · המדדים המובילים היום</div>'
+            f'<div class="ts-indices">{"".join(cards)}</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def _choose_symbol(source_key: str) -> None:
+    chosen = st.session_state.get(source_key)
+    if chosen:
+        st.session_state["chart_symbol"] = chosen
+        st.session_state[source_key] = None
+        st.session_state["chart_search"] = ""
+
+
+def chart_toolbar(held: list[str]) -> tuple[str, str, list[str], bool]:
+    from tradesys.agents.chart_analyst import LEADING_INDICES
+    from tradesys.data.chart_ranges import RANGES
+
+    index_names = dict(LEADING_INDICES)
+    with st.container(border=True, key="chart_toolbar"):
+        query = st.text_input(
+            "חיפוש",
+            placeholder="🔍 חפש כל מניה, קרן סל או מדד: אנבידיה, TSLA, נאסד\"ק, זהב…",
+            key="chart_search",
+            label_visibility="collapsed",
+        )
+        if query.strip():
+            try:
+                hits = get_asset_directory().search(query, limit=8)
+            except Exception:  # the broker's listing being down must not break the chart
+                hits = []
+            names = {hit.symbol: hit.name for hit in hits}
+            if names:
+                st.pills(
+                    "תוצאות", list(names), key="chart_hits",
+                    format_func=lambda s: f"{s} · {names[s][:26]}",
+                    on_change=_choose_symbol, args=("chart_hits",),
+                    label_visibility="collapsed",
+                )
+            else:
+                st.caption("לא נמצאו תוצאות. נסה שם באנגלית או את סימול המניה.")
+        quick = list(index_names) + [s for s in held if s not in index_names]
+        st.pills(
+            "מהיר", quick, key="chart_quick",
+            format_func=lambda s: index_names.get(s, f"{s} · בתיק"),
+            on_change=_choose_symbol, args=("chart_quick",),
+            label_visibility="collapsed",
+        )
+        range_key = st.segmented_control(
+            "טווח", RANGES, default="שנה", key="chart_range", label_visibility="collapsed"
+        ) or "שנה"
+        style_col, log_col = st.columns([3, 1])
+        style = style_col.segmented_control(
+            "סוג", CHART_STYLES, default="נרות", key="chart_style", label_visibility="collapsed"
+        ) or "נרות"
+        log_scale = log_col.toggle(
+            "לוג", key="chart_log",
+            help="סקאלה לוגריתמית: עלייה של 10% נראית באותו גודל בכל מחיר. מומלץ ל-5 ול-10 שנים.",
+        )
+        tools = st.pills(
+            "כלים", CHART_TOOLS, selection_mode="multi", default=["ממוצעים", "מחזור"],
+            key="chart_tools", label_visibility="collapsed",
+        )
+    return range_key, style, tools, log_scale
+
+
+def history_panel(client_id: str, symbol: str) -> None:
+    from tradesys.data.chart_ranges import history
+
+    research = history(load_daily_history(client_id, symbol, st.session_state.get("_bust", 0)))
+    if research is None:
+        return
+    st.markdown(
+        f'<div class="ts-brief"><div class="ts-brief-title">📚 מחקר היסטורי · מאז {esc(research.first_day)}</div>'
+        f'<ul><li>סך הכול: <b>{ltr(f"{research.total:+,.0f}%")}</b> · בממוצע לשנה: '
+        f'<b>{ltr(f"{research.per_year:+.1f}%")}</b></li>'
+        f"<li>הנפילה הכי עמוקה מהשיא: <b>{ltr(f'{research.max_drawdown:.0f}%')}</b></li>"
+        f"<li>שנים בעלייה: <b>{research.up_years} מתוך {research.full_years}</b> שנים מלאות</li>"
+        f"</ul></div>",
+        unsafe_allow_html=True,
+    )
+    years = research.years
+    fig = go.Figure(
+        go.Bar(
+            x=[str(year) for year, _ in years],
+            y=[value for _, value in years],
+            marker_color=[PALETTE["positive"] if v >= 0 else PALETTE["negative"] for _, v in years],
+            text=[f"{v:+.0f}%" for _, v in years],
+            textposition="outside",
+            hovertemplate="%{x}: %{y:+.1f}%<extra></extra>",
+        )
+    )
+    style_figure(fig, 260)
+    fig.update_layout(showlegend=False, margin=dict(l=10, r=10, t=20, b=10))
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+    st.caption("תשואה לפי שנה (השנה הראשונה והאחרונה חלקיות). מחיר בלבד, בלי דיבידנדים.")
+
+
+def analyst_panel(client_id: str, symbol: str) -> None:
+    from tradesys.agents.chart_analyst import evidence_text
+
+    reading = analyst_reading(client_id, symbol, st.session_state.get("_bust", 0))
+    if reading is None:
+        st.info("למנתח הגרפים צריך לפחות כשנה של היסטוריה כדי לקרוא את הגרף.")
+        return
+    facts = "".join(f"<li>{esc(fact)}</li>" for fact in reading.facts)
+    st.markdown(
+        f'<div class="ts-brief ts-analyst-{reading.action}"><div class="ts-brief-title">📐 מנתח הגרפים</div>'
+        f'<div class="ts-brief-headline">{ACTION_ICONS[reading.action]} {esc(reading.headline)}</div>'
+        f'<div>{esc(reading.plan)}</div><ul>{facts}</ul>'
+        f'<div class="ts-agent-text">{esc(evidence_text(reading.evidence))}</div></div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("קריאה טכנית של הגרף היומי, לא המלצת השקעה. הרובוט עדיין קונה רק דרך שומר הסיכון.")
+
+
 def tab_charts(client_id: str, snapshot: dict, session) -> None:
-    chosen = st.selectbox("בחר נייר ערך", snapshot["symbols"], key="chart_symbol")
-    frame = load_bars(client_id, chosen, st.session_state.get("_bust", 0))
+    from datetime import timedelta
+
+    from tradesys.data.chart_ranges import INTRADAY, NEW_YORK, WEEKLY
+    from tradesys.orchestration.why import timeline
+
+    with st.spinner("מנתח הגרפים קורא את המדדים…"):
+        indices_board(client_id)
+    open_df, positions_df = snapshot["open_df"], snapshot["positions_df"]
+    held = [
+        *([] if positions_df.empty else positions_df["סימבול"]),
+        *([] if open_df.empty else open_df["סימבול"]),
+    ]
+    range_key, style, tools, log_scale = chart_toolbar(list(dict.fromkeys(held)))
+    symbol = st.session_state.setdefault("chart_symbol", "QQQ")
+
+    try:
+        with st.spinner(f"טוען את {symbol}…"):
+            frame, labels = chart_frame(client_id, symbol, range_key)
+    except Exception:  # a symbol the data vendor rejects must not break the tab
+        frame, labels = pd.DataFrame(), {}
     if frame.empty:
-        st.warning(f"לא התקבלו נתונים עבור {chosen}.")
+        st.warning(f"לא התקבלו נתונים עבור {symbol} בטווח הזה. בטווח יום ושבוע יש נתונים רק מימי מסחר.")
         return
 
-    overlays: list[dict] = []
-    open_df = snapshot["open_df"]
-    if not open_df.empty:
-        for _, row in open_df[open_df["סימבול"] == chosen].iterrows():
-            overlays.append(
-                {"value": row["כניסה"], "colour": PALETTE["accent"], "label": "כניסה"}
-            )
-            overlays.append(
-                {"value": row["סטופ"], "colour": PALETTE["negative"], "label": "סטופ"}
-            )
-            if row["יעד"]:
-                overlays.append(
-                    {"value": row["יעד"], "colour": PALETTE["positive"], "label": "יעד"}
-                )
-
+    first = float(frame["open"].iloc[0] if range_key in INTRADAY else frame["close"].iloc[0])
     last = float(frame["close"].iloc[-1])
-    previous = float(frame["close"].iloc[-2]) if len(frame) > 1 else last
-    change = (last / previous - 1) * 100 if previous else 0.0
+    change = last - first
+    try:
+        name = get_asset_directory().name(symbol) or ""
+    except Exception:  # the name is decoration; the chart works without it
+        name = ""
+    tone = "ts-up" if change >= 0 else "ts-down"
+    st.markdown(
+        f'<div class="ts-quote"><div class="ts-quote-name"><b dir="ltr">{esc(symbol)}</b> · {esc(name)}</div>'
+        f'<div class="ts-quote-row"><span class="ts-quote-price">{ltr(money(last))}</span>'
+        f'<span class="{tone}">{ltr(f"{change:+,.2f} ({change / first * 100:+.2f}%)")}</span>'
+        f'<span class="ts-quote-range">טווח: {esc(range_key)} · נמוך {ltr(money(frame["low"].min()))} · '
+        f'גבוה {ltr(money(frame["high"].max()))}</span></div></div>',
+        unsafe_allow_html=True,
+    )
 
-    metrics = st.columns(4)
-    metrics[0].metric("מחיר אחרון", f"${last:,.2f}")
-    metrics[1].metric("שינוי", f"{change:+.2f}%")
-    sma20 = frame["sma20"].iloc[-1]
-    metrics[2].metric("ממוצע 20", f"${sma20:,.2f}" if pd.notna(sma20) else "—")
-    metrics[3].metric("נרות", f"{len(frame):,}")
-
+    overlays: list[dict] = []
+    if not open_df.empty:
+        for _, row in open_df[open_df["סימבול"] == symbol].iterrows():
+            overlays.append({"value": row["כניסה"], "colour": PALETTE["accent"], "label": "כניסה"})
+            overlays.append({"value": row["סטופ"], "colour": PALETTE["negative"], "label": "סטופ"})
+            if row["יעד"]:
+                overlays.append({"value": row["יעד"], "colour": PALETTE["positive"], "label": "יעד"})
     # A fill outside the candles' range means the journal and this price feed
     # disagree (a history recorded on another feed); drawing it would mislead.
     low, high = frame["low"].min() * 0.9, frame["high"].max() * 1.1
-    story = [p for p in trade_story(session, chosen) if low <= p["price"] <= high]
-    st.plotly_chart(price_chart(frame, chosen, overlays, story), width="stretch")
-    if overlays:
-        st.caption("הקווים המקווקווים הם רמות הכניסה, הסטופ והיעד של הפוזיציה שלך.")
-    if story:
-        st.caption("משולש: כניסה · יהלום: הסטופ עלה · איקס: יציאה. העבר את העכבר לקבלת ההסבר.")
+    start, end = frame["ts"].iloc[0], frame["ts"].iloc[-1]
+    story = []
+    for point in trade_story(session, symbol):
+        when = pd.Timestamp(point["ts"])
+        when = (when.tz_localize("UTC") if when.tzinfo is None else when)
+        when = when.tz_convert(NEW_YORK).tz_localize(None)
+        if low <= point["price"] <= high and start <= when <= end + timedelta(days=7):
+            story.append({**point, "ts": when})
 
-    from datetime import timedelta
+    benchmark = None
+    if "השוואה ל-S&P 500" in tools and symbol != "SPY":
+        spy, _ = chart_frame(client_id, "SPY", range_key)
+        both = frame[["ts", "close"]].merge(spy[["ts", "close"]], on="ts", suffixes=("", "_spy"))
+        if not both.empty:
+            both["scaled"] = both["close_spy"] / both["close_spy"].iloc[0] * both["close"].iloc[0]
+            benchmark = both
 
-    from tradesys.orchestration.why import timeline
+    gaps = [] if range_key in WEEKLY else [dict(bounds=["sat", "mon"])]
+    if range_key in INTRADAY:
+        gaps.append(dict(bounds=[16, 9.5], pattern="hour"))
+    st.plotly_chart(
+        price_chart(frame, symbol, labels, style=style, tools=tools, log_scale=log_scale,
+                    gaps=gaps, overlays=overlays, story=story, benchmark=benchmark),
+        width="stretch",
+        config=chart_config(symbol),
+    )
+    st.caption(
+        "סרגל הכלים בפינת הגרף: ציור קווי מגמה ומלבנים, מחיקה, זום וגלילה, ושמירת הגרף כתמונה. "
+        "גרירה מזיזה את הגרף, גלגלת העכבר מגדילה."
+        + (" משולש: כניסה · יהלום: הסטופ עלה · איקס: יציאה." if story else "")
+    )
 
-    st.markdown(f"##### הסיפור של {chosen}")
-    since = datetime.now(timezone.utc) - timedelta(days=90)
-    render_why(timeline(session.journal.agent_events(since), chosen), limit=25)
+    with st.container(key="chart_cols"):
+        analyst_col, history_col = st.columns(2)
+        with analyst_col:
+            analyst_panel(client_id, symbol)
+        with history_col:
+            history_panel(client_id, symbol)
+
+    events = timeline(session.journal.agent_events(datetime.now(timezone.utc) - timedelta(days=90)), symbol)
+    if events:
+        st.markdown(f"##### הסיפור של {symbol}")
+        render_why(events, limit=25)
 
 
 def render_why(entries, limit: int = 40) -> None:
