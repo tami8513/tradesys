@@ -429,9 +429,12 @@ class RiskManager(Agent):
             qty = capped
 
         if not limits.allow_leverage:
-            affordable = int(account.buying_power // candidate.entry)
+            # Cash, not buying power: a margin account's buying power is a multiple
+            # of equity (4x on the Alpaca paper account), so capping by it let
+            # entries borrow once the cash ran out.
+            affordable = int(min(account.buying_power, account.cash) // candidate.entry)
             if affordable < qty:
-                notes.append(f"reduced to {affordable} shares by available buying power")
+                notes.append(f"reduced to {affordable} shares by available cash")
                 qty = affordable
 
         if limits.allocation_cap is not None:

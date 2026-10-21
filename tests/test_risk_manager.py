@@ -149,3 +149,17 @@ def test_releasing_a_drawdown_halt_rebases_the_peak(tmp_path, clock):
 
     journal.clear_halt(rebase_peak_to=97_000.0)
     assert risk.preflight(make_account(equity=97_000.0)).ok
+
+
+def test_without_leverage_an_entry_is_capped_by_cash_not_margin_buying_power(tenant, journal, clock):
+    from dataclasses import replace
+
+    from conftest import make_account, make_candidate, make_profile, make_stats
+    from tradesys.agents.risk_manager import RiskManager
+
+    margin_account = replace(make_account(), cash=1_000.0, buying_power=400_000.0)
+    decision = RiskManager(tenant, make_profile(), journal, clock).evaluate(
+        make_candidate(), margin_account, [], make_stats()
+    )
+
+    assert decision.qty * make_candidate().entry <= 1_000.0
