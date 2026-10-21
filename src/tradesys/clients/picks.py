@@ -3,13 +3,19 @@
 The pick is the client's decision about their own account, so it widens what the
 Scout looks at; it never widens risk. Every pick still goes through the Risk
 Manager like any other idea: minimum price, liquidity cap, position cap, stops.
+
+Each pick can also be marked:
+  * priority: evaluated before the robot's own ideas, so it gets a free slot first;
+  * ask first: when the robot wants to buy it, it asks the client instead of
+    buying, and the client approves or declines (see proposals.py).
 """
 
 from __future__ import annotations
 
 import json
 import re
-from dataclasses import replace
+from dataclasses import asdict, dataclass, replace
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from tradesys.clients.profile import ClientProfile, WatchlistEntry
@@ -23,6 +29,34 @@ PICK_SETUPS = frozenset(SetupType)
 _TICKER = re.compile(r"^[A-Z]{1,5}(\.[A-Z])?$")
 
 
+@dataclass(frozen=True, slots=True)
+class Pick:
+    symbol: str
+    priority: bool = False
+    ask_first: bool = False
+    # Standing approval for one trading day (ISO date, New York): on that day an
+    # "ask first" pick is bought without asking, up to `max_amount` dollars.
+    preapproved_on: str = ""
+    max_amount: float | None = None
+
+
+def approval_day(now: datetime) -> date:
+    """The trading day a standing approval given at `now` applies to.
+
+    Before the close it is today; after it, the next weekday. A holiday simply
+    passes with nothing bought, and the approval lapses with it.
+    """
+    from zoneinfo import ZoneInfo
+
+    local = now.astimezone(ZoneInfo("America/New_York"))
+    day = local.date()
+    if local.time() >= time(16, 0):
+        day += timedelta(days=1)
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+    return day
+
+
 def normalize(symbol: str) -> str:
     """Validate a typed ticker at the input boundary; raise with a reason in Hebrew."""
     ticker = symbol.strip().upper()
@@ -31,28 +65,56 @@ def normalize(symbol: str) -> str:
     return ticker
 
 
-def read_picks(tenant_dir: Path) -> list[str]:
+def _pick(raw) -> Pick:
+    # Picks saved before the options existed are bare ticker strings.
+    if isinstance(raw, str):
+        return Pick(normalize(raw))
+    return Pick(
+        normalize(raw["symbol"]),
+        priority=bool(raw.get("priority", False)),
+        ask_first=bool(raw.get("ask_first", False)),
+        preapproved_on=str(raw.get("preapproved_on", "")),
+        max_amount=float(raw["max_amount"]) if raw.get("max_amount") else None,
+    )
+
+
+def read_picks(tenant_dir: Path) -> list[Pick]:
     path = Path(tenant_dir) / PICKS_FILE
     if not path.exists():
         return []
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-        return [normalize(s) for s in raw.get("symbols", [])][:MAX_PICKS]
-    except (ValueError, OSError, ConfigError, AttributeError):
+        return [_pick(item) for item in raw.get("symbols", [])][:MAX_PICKS]
+    except (ValueError, OSError, ConfigError, AttributeError, KeyError, TypeError):
         return []
 
 
-def write_picks(tenant_dir: Path, symbols: list[str]) -> None:
-    unique = list(dict.fromkeys(normalize(s) for s in symbols))
+def write_picks(tenant_dir: Path, picks: list[Pick]) -> None:
+    unique: dict[str, Pick] = {}
+    for pick in picks:
+        unique.setdefault(normalize(pick.symbol), replace(pick, symbol=normalize(pick.symbol)))
     if len(unique) > MAX_PICKS:
         raise ConfigError(f"אפשר לבחור עד {MAX_PICKS} מניות")
-    write_json_atomic(Path(tenant_dir) / PICKS_FILE, {"symbols": unique})
+    write_json_atomic(
+        Path(tenant_dir) / PICKS_FILE, {"symbols": [asdict(p) for p in unique.values()]}
+    )
 
 
-def apply_picks(profile: ClientProfile, picks: list[str]) -> ClientProfile:
+def apply_picks(profile: ClientProfile, picks: list[Pick]) -> ClientProfile:
     """Add the picks to the watchlist and pin them so the Scout always looks."""
     if not picks:
         return profile
     listed = {entry.symbol for entry in profile.watchlist}
-    added = tuple(WatchlistEntry(symbol=s, setups=PICK_SETUPS) for s in picks if s not in listed)
-    return replace(profile, watchlist=profile.watchlist + added, pinned_symbols=tuple(picks))
+    added = tuple(
+        WatchlistEntry(symbol=p.symbol, setups=PICK_SETUPS) for p in picks if p.symbol not in listed
+    )
+    return replace(
+        profile,
+        watchlist=profile.watchlist + added,
+        pinned_symbols=tuple(p.symbol for p in picks),
+        priority_symbols=tuple(p.symbol for p in picks if p.priority),
+        approval_symbols=tuple(p.symbol for p in picks if p.ask_first),
+        preapprovals=tuple(
+            (p.symbol, p.preapproved_on, p.max_amount) for p in picks if p.preapproved_on
+        ),
+    )

@@ -54,6 +54,10 @@ _REASONS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
         (r"^sized on the ([\d.]+) the client allocated.*", r"הגודל חושב לפי הסכום שהלקוח הקצה לרובוט ($\1)"),
         (r"^autopilot: ([\d.]+)% risk per trade.*", r"טייס אוטומטי: \1% סיכון לעסקה"),
         (r"^risk budget at (\d+)% of the ceiling by conviction", r"סוכן ההתקפה הקצה \1% מתקרת הסיכון"),
+        (
+            r"^standing approval of \$([\d,]+) buys less than one share",
+            r"הסכום שאישרת מראש ($\1) לא מספיק אפילו למניה אחת",
+        ),
     )
 )
 
@@ -167,6 +171,18 @@ def _entry(event: dict[str, Any]) -> WhyEntry | None:
         )
     if agent == "monitor" and kind == "error":
         return WhyEntry(when, symbol, f"תקלה בניהול הפוזיציה: {detail}", "negative")
+    if agent == "execution" and kind == "awaiting_approval":
+        return WhyEntry(
+            when, symbol, f"הרובוט מצא הזדמנות ומחכה לאישור שלך ({detail} מניות)", "neutral"
+        )
+    if agent == "client" and kind == "approved":
+        return WhyEntry(when, symbol, f"אישרת את הקנייה: {detail}", "positive")
+    if agent == "client" and kind == "preapproved":
+        return WhyEntry(
+            when, symbol, f"נקנה לפי האישור המראש שלך ({detail} מניות), בלי לשאול שוב", "positive"
+        )
+    if agent == "client" and kind == "declined":
+        return WhyEntry(when, symbol, "דחית את ההצעה, והרובוט לא קנה", "neutral")
     if agent == "reflection" and kind == "lessons":
         return WhyEntry(when, symbol, f"סוכן הלמידה כתב {detail} לקחים חדשים", "neutral")
     return None

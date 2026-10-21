@@ -22,6 +22,7 @@ import json
 import os
 import sys
 import traceback
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -341,7 +342,7 @@ def upgrade_cta(headline: str, body: str, key: str) -> None:
         unsafe_allow_html=True,
     )
     st.markdown("")
-    if st.button("פתח חשבון אמיתי", key=key, type="primary", use_container_width=True):
+    if st.button("פתח חשבון אמיתי", key=key, type="primary", width="stretch"):
         st.session_state["role"] = None
         st.session_state["_goto_register"] = True
         st.rerun()
@@ -377,7 +378,7 @@ def registration_form() -> None:
         key="reg_agree",
     )
 
-    if st.button("שלח בקשה", type="primary", use_container_width=True):
+    if st.button("שלח בקשה", type="primary", width="stretch"):
         store = get_account_store()
         registrations = get_registration_store()
         if not all([company.strip(), contact.strip(), email.strip(), client_id.strip()]):
@@ -434,7 +435,7 @@ def login_screen() -> None:
             "עם כסף מדומה — ללא הרשמה וללא חיבור ברוקר.</div>",
             unsafe_allow_html=True,
         )
-        if st.button("▶ כניסה למצב הדגמה", use_container_width=True):
+        if st.button("▶ כניסה למצב הדגמה", width="stretch"):
             st.session_state["role"] = "demo"
             st.session_state["auth_client"] = DEMO_CLIENT_ID
             st.rerun()
@@ -478,7 +479,7 @@ def login_screen() -> None:
                     autocomplete="current-password",
                 )
                 submitted = st.form_submit_button(
-                    "התחבר", use_container_width=True, type="primary"
+                    "התחבר", width="stretch", type="primary"
                 )
             if submitted:
                 if not client_id.strip():
@@ -520,7 +521,7 @@ def login_screen() -> None:
                         autocomplete="current-password",
                     )
                     submitted = st.form_submit_button(
-                        "כניסה לפורטל ניהול", use_container_width=True
+                        "כניסה לפורטל ניהול", width="stretch"
                     )
                 if submitted:
                     import hmac
@@ -1064,7 +1065,7 @@ def overview_details(snapshot: dict) -> None:
     left, right = st.columns([3, 2])
     with left:
         st.markdown("##### רווח ממומש מצטבר")
-        st.plotly_chart(equity_chart(snapshot["closed_df"]), use_container_width=True)
+        st.plotly_chart(equity_chart(snapshot["closed_df"]), width="stretch")
     with right:
         st.markdown("##### ביצועים לפי תבנית")
         rows = snapshot["setup_perf"]
@@ -1086,7 +1087,7 @@ def overview_details(snapshot: dict) -> None:
                 )
             )
             figure.add_hline(y=0, line=dict(color=PALETTE["border"], width=1))
-            st.plotly_chart(style_figure(figure, 300), use_container_width=True)
+            st.plotly_chart(style_figure(figure, 300), width="stretch")
 
     st.markdown("##### פוזיציות פתוחות")
     positions = snapshot["positions_df"]
@@ -1106,7 +1107,7 @@ def overview_details(snapshot: dict) -> None:
                 lambda v: f"color: {PALETTE['positive'] if v >= 0 else PALETTE['negative']}",
                 subset=["לא ממומש", "תשואה %"],
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -1115,7 +1116,7 @@ def overview_details(snapshot: dict) -> None:
         if open_df.empty:
             st.caption("אין פוזיציות בניטור.")
         else:
-            st.dataframe(open_df, use_container_width=True, hide_index=True)
+            st.dataframe(open_df, width="stretch", hide_index=True)
 
 
 def trade_story(session, symbol: str) -> list[dict]:
@@ -1201,7 +1202,7 @@ def tab_charts(client_id: str, snapshot: dict, session) -> None:
     # disagree (a history recorded on another feed); drawing it would mislead.
     low, high = frame["low"].min() * 0.9, frame["high"].max() * 1.1
     story = [p for p in trade_story(session, chosen) if low <= p["price"] <= high]
-    st.plotly_chart(price_chart(frame, chosen, overlays, story), use_container_width=True)
+    st.plotly_chart(price_chart(frame, chosen, overlays, story), width="stretch")
     if overlays:
         st.caption("הקווים המקווקווים הם רמות הכניסה, הסטופ והיעד של הפוזיציה שלך.")
     if story:
@@ -1379,7 +1380,7 @@ def tab_agents(snapshot: dict, session, armed: bool) -> None:
             placeholder="עסקה 45 על RIVN הייתה מצוינת, תעדף את התבנית הזו",
             label_visibility="collapsed",
         )
-        if st.button("שלח משוב", disabled=not armed, use_container_width=True):
+        if st.button("שלח משוב", disabled=not armed, width="stretch"):
             if not feedback.strip():
                 st.warning("לא הוזן טקסט.")
             else:
@@ -1406,7 +1407,7 @@ def tab_agents(snapshot: dict, session, armed: bool) -> None:
                     "מצטבר": "{:+,.2f}",
                 }
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -1504,7 +1505,7 @@ def tab_broker(client_id: str, demo: bool = False) -> None:
         allowed = True
 
     if st.button(
-        "בדוק ושמור חיבור", type="primary", use_container_width=True, disabled=not allowed
+        "בדוק ושמור חיבור", type="primary", width="stretch", disabled=not allowed
     ):
         if not key_id.strip() or not secret_key.strip():
             st.warning("יש למלא את שני השדות.")
@@ -1614,7 +1615,7 @@ def tab_billing(client_id: str, snapshot: dict, demo: bool = False) -> None:
     if billing.history:
         st.markdown("##### היסטוריית חיובים")
         st.dataframe(
-            pd.DataFrame(billing.history), use_container_width=True, hide_index=True
+            pd.DataFrame(billing.history), width="stretch", hide_index=True
         )
 
     st.caption(
@@ -1721,7 +1722,7 @@ def control_panel(client_id: str, snapshot: dict, session, armed: bool) -> str:
     )
     locked_hint(armed)
     if st.button("שמור את ההגדרות", type="primary", disabled=not armed or not changed,
-                 use_container_width=True, key=f"control_save_{client_id}"):
+                 width="stretch", key=f"control_save_{client_id}"):
         write_control(session.tenant.data_dir, mode, allocation, equity)
         invalidate()
         st.rerun()
@@ -1771,16 +1772,16 @@ def get_asset_directory():
     return AssetDirectory(settings.data_dir / "_platform", fetch)
 
 
-def add_pick(session, picks: list[str], ticker: str) -> None:
+def add_pick(session, picks: list, ticker: str) -> None:
     """Validate a ticker against market data, then save it as a pick."""
-    from tradesys.clients.picks import normalize, write_picks
+    from tradesys.clients.picks import Pick, normalize, write_picks
     from tradesys.core.errors import ConfigError
 
     ticker = normalize(ticker)
     bars = session.market_data.history(ticker, timeframe="1Day", limit=60)
     if len(bars) < 60:
         raise ConfigError(f"לא נמצאו מספיק נתוני מסחר עבור {ticker}")
-    write_picks(session.tenant.data_dir, [*picks, ticker])
+    write_picks(session.tenant.data_dir, [*picks, Pick(ticker)])
 
 
 def my_stocks(client_id: str, session, armed: bool) -> None:
@@ -1819,11 +1820,11 @@ def my_stocks(client_id: str, session, armed: bool) -> None:
                 f'<div class="ts-agent-text">{esc(hit.name)}</div></div></div>',
                 unsafe_allow_html=True,
             )
-            chosen = hit.symbol in picks
+            chosen = hit.symbol in {p.symbol for p in picks}
             if button_col.button(
                 "נבחרה" if chosen else "הוסף",
                 disabled=not armed or chosen or len(picks) >= MAX_PICKS,
-                use_container_width=True,
+                width="stretch",
                 key=f"pick_add_{client_id}_{hit.symbol}",
             ):
                 try:
@@ -1838,15 +1839,119 @@ def my_stocks(client_id: str, session, armed: bool) -> None:
         st.caption(f"הגעת למקסימום של {MAX_PICKS} מניות. הסר אחת כדי להוסיף אחרת.")
     locked_hint(armed)
 
-    for ticker in picks:
-        name_col, remove_col = st.columns([3, 1])
-        name_col.markdown(f'<span class="ts-chip"><b>{esc(ticker)}</b></span>',
+    if picks:
+        st.caption(
+            "⭐ עדיפות: הרובוט בודק את המניה לפני הרעיונות שלו. "
+            "✋ לשאול אותי: כשהרובוט רוצה לקנות, הוא מבקש את אישורך במקום לקנות. "
+            "אפשר גם לאשר מראש ליום המסחר הקרוב, והוא יקנה בלי לשאול."
+        )
+    for pick in picks:
+        name_col, star_col, ask_col, remove_col = st.columns([2, 2, 2, 1])
+        name_col.markdown(f'<span class="ts-chip"><b>{esc(pick.symbol)}</b></span>',
                           unsafe_allow_html=True)
-        if remove_col.button("הסר", disabled=not armed, key=f"pick_rm_{client_id}_{ticker}",
-                             use_container_width=True):
-            write_picks(session.tenant.data_dir, [t for t in picks if t != ticker])
+        priority = star_col.checkbox(
+            "⭐ עדיפות", value=pick.priority, disabled=not armed,
+            key=f"pick_star_{client_id}_{pick.symbol}",
+        )
+        ask_first = ask_col.checkbox(
+            "✋ לשאול אותי", value=pick.ask_first, disabled=not armed,
+            key=f"pick_ask_{client_id}_{pick.symbol}",
+        )
+        if (priority, ask_first) != (pick.priority, pick.ask_first):
+            write_picks(
+                session.tenant.data_dir,
+                [replace(p, priority=priority, ask_first=ask_first) if p.symbol == pick.symbol
+                 else p for p in picks],
+            )
             invalidate()
             st.rerun()
+        if remove_col.button("הסר", disabled=not armed, key=f"pick_rm_{client_id}_{pick.symbol}",
+                             width="stretch"):
+            write_picks(session.tenant.data_dir, [p for p in picks if p.symbol != pick.symbol])
+            invalidate()
+            st.rerun()
+        if pick.ask_first:
+            standing_approval(client_id, session, picks, pick, armed)
+
+
+def standing_approval(client_id: str, session, picks: list, pick, armed: bool) -> None:
+    """Approve an "ask first" pick ahead of time, for the coming trading day."""
+    from tradesys.clients.picks import approval_day, write_picks
+
+    day = approval_day(datetime.now(timezone.utc))
+    label = day.strftime("%d/%m")
+
+    def save(**changes) -> None:
+        write_picks(
+            session.tenant.data_dir,
+            [replace(p, **changes) if p.symbol == pick.symbol else p for p in picks],
+        )
+        invalidate()
+        st.rerun()
+
+    if pick.preapproved_on == day.isoformat():
+        limit = f", עד {money(pick.max_amount)}" if pick.max_amount else ""
+        text_col, cancel_col = st.columns([3, 1])
+        text_col.success(
+            f"✅ {pick.symbol} מאושרת מראש ליום המסחר {label}{limit}. "
+            "אם תהיה נקודת כניסה טובה, הרובוט יקנה בלי לשאול.",
+        )
+        if cancel_col.button("בטל אישור", disabled=not armed,
+                             key=f"preapprove_off_{client_id}_{pick.symbol}",
+                             width="stretch"):
+            save(preapproved_on="", max_amount=None)
+        return
+
+    amount_col, button_col = st.columns([2, 2])
+    amount = amount_col.number_input(
+        f"סכום מקסימלי ל-{pick.symbol} ($, 0 = לפי שומר הסיכון)",
+        min_value=0.0, value=0.0, step=500.0,
+        key=f"preapprove_amount_{client_id}_{pick.symbol}",
+    )
+    if button_col.button(f"✅ אשר מראש ל-{label}", disabled=not armed,
+                         key=f"preapprove_on_{client_id}_{pick.symbol}",
+                         width="stretch"):
+        save(preapproved_on=day.isoformat(), max_amount=amount or None)
+
+
+def proposals_banner(client_id: str, session, armed: bool) -> None:
+    """The robot's requests to buy an "ask first" pick, with approve and decline."""
+    from tradesys.clients.proposals import pending
+
+    waiting = pending(session.tenant.data_dir, datetime.now(timezone.utc))
+    for proposal in waiting:
+        cost = proposal.qty * proposal.entry
+        risk = proposal.qty * (proposal.entry - proposal.stop)
+        st.markdown(
+            f'<div class="ts-brief" style="border-right-color:{PALETTE["accent"]}">'
+            f'<div class="ts-brief-title" style="color:{PALETTE["accent"]}">✋ הרובוט מבקש את אישורך</div>'
+            f'<div class="ts-brief-headline">לקנות {proposal.qty} מניות של {esc(proposal.symbol)} '
+            f'בסביבות {money(proposal.entry)}</div>'
+            f'<ul><li>עלות משוערת: {money(cost)}</li>'
+            f'<li>הגנה: מכירה אוטומטית אם תרד ל-{money(proposal.stop)} '
+            f'(הפסד מרבי של כ-{money(risk)})</li>'
+            f'<li>הבקשה תקפה עד סוף יום המסחר. באישור, שומר הסיכון בודק שוב במחיר של אותו רגע.</li>'
+            f"</ul></div>",
+            unsafe_allow_html=True,
+        )
+        yes_col, no_col = st.columns(2)
+        if yes_col.button("✅ מאשר", type="primary", disabled=not armed,
+                          width="stretch", key=f"approve_{proposal.proposal_id}"):
+            with st.spinner("שומר הסיכון בודק ושולח…"):
+                outcome = session.execute_proposal(proposal.proposal_id)
+            st.session_state[f"proposal_note_{client_id}"] = outcome
+            invalidate()
+            st.rerun()
+        if no_col.button("לא עכשיו", disabled=not armed, width="stretch",
+                         key=f"decline_{proposal.proposal_id}"):
+            session.decline_proposal(proposal.proposal_id)
+            invalidate()
+            st.rerun()
+    if waiting:
+        locked_hint(armed)
+    note = st.session_state.pop(f"proposal_note_{client_id}", None)
+    if note:
+        st.info(note)
 
 
 def autopilot_status(session) -> None:
@@ -1905,7 +2010,7 @@ def risk_meter(client_id: str, snapshot: dict, session, armed: bool) -> None:
                 f"רמת סיכון · {active.name}" if active else "רמת סיכון · ברירת מחדל",
                 [(0, green), (PROTECTED_RISK_LEVEL, red)],
             ),
-            use_container_width=True,
+            width="stretch",
             config={"displayModeBar": False},
         )
     with gauges[1]:
@@ -1916,7 +2021,7 @@ def risk_meter(client_id: str, snapshot: dict, session, armed: bool) -> None:
                 f"ירידה מהשיא מול המגבלה ({limit}%)",
                 [(0, green), (limit * 0.5, amber), (limit * 0.8, red)],
             ),
-            use_container_width=True,
+            width="stretch",
             config={"displayModeBar": False},
         )
 
@@ -1953,7 +2058,7 @@ def risk_meter(client_id: str, snapshot: dict, session, armed: bool) -> None:
                 ],
             }
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -1998,7 +2103,7 @@ def risk_meter(client_id: str, snapshot: dict, session, armed: bool) -> None:
             or unchanged
             or (target.beyond_protection and not acknowledged)
         ),
-        use_container_width=True,
+        width="stretch",
     ):
         write_track(
             session.tenant.data_dir,
@@ -2064,7 +2169,7 @@ def tab_controls(
         if st.button(
             "הרץ מחזור מסחר",
             disabled=not armed or suspended,
-            use_container_width=True,
+            width="stretch",
             type="primary",
         ):
             try:
@@ -2082,7 +2187,7 @@ def tab_controls(
 
     with right:
         st.caption("בדיקת סטופים ויעדים בלבד. לעולם אינה פותחת פוזיציה חדשה.")
-        if st.button("בדוק פוזיציות פתוחות", disabled=not armed, use_container_width=True):
+        if st.button("בדוק פוזיציות פתוחות", disabled=not armed, width="stretch"):
             try:
                 with st.spinner("בודק…"):
                     report = session.monitor.check_once()
@@ -2112,7 +2217,7 @@ def tab_controls(
         st.error("מסחר אוטומטי אינו זמין בחשבון אמיתי דרך מסך זה.", icon="⛔")
     elif running:
         st.success(f"פעיל — מחזור כל {AUTOMATION_INTERVAL_SECONDS} שניות.")
-        if st.button("עצור מסחר אוטומטי", disabled=not armed, use_container_width=True):
+        if st.button("עצור מסחר אוטומטי", disabled=not armed, width="stretch"):
             set_automation(session, False)
             st.rerun()
     else:
@@ -2121,7 +2226,7 @@ def tab_controls(
         if st.button(
             "הפעל מסחר אוטומטי",
             disabled=not armed or suspended or confirm != client_id,
-            use_container_width=True,
+            width="stretch",
         ):
             set_automation(session, True)
             st.rerun()
@@ -2134,7 +2239,7 @@ def tab_controls(
         if st.button(
             "עצור הכול",
             disabled=not armed or snapshot["halted"],
-            use_container_width=True,
+            width="stretch",
             type="primary",
         ):
             session.journal.halt("עצירה יזומה על ידי הלקוח")
@@ -2148,7 +2253,7 @@ def tab_controls(
             st.caption("אין פוזיציות לסגירה.")
         else:
             symbol = st.selectbox("סגור פוזיציה", open_df["סימבול"].tolist())
-            if st.button(f"סגור {symbol}", disabled=not armed, use_container_width=True):
+            if st.button(f"סגור {symbol}", disabled=not armed, width="stretch"):
                 try:
                     report = session.monitor.close_manually(symbol, "סגירה יזומה")
                     st.success(report.summary())
@@ -2217,18 +2322,18 @@ def client_portal(client_id: str, demo: bool = False) -> None:
             )
             if armed:
                 st.warning("הפעולות פעילות.", icon="⚠")
-        if st.button("רענן נתונים", use_container_width=True):
+        if st.button("רענן נתונים", width="stretch"):
             invalidate()
             st.rerun()
         st.divider()
         if demo:
-            if st.button("פתח חשבון אמיתי", use_container_width=True, type="primary"):
+            if st.button("פתח חשבון אמיתי", width="stretch", type="primary"):
                 st.session_state["role"] = None
                 st.session_state["_goto_register"] = True
                 st.rerun()
-            if st.button("צא ממצב הדגמה", use_container_width=True):
+            if st.button("צא ממצב הדגמה", width="stretch"):
                 logout()
-        elif st.button("התנתק", use_container_width=True):
+        elif st.button("התנתק", width="stretch"):
             logout()
         st.caption(f"עודכן {snapshot['taken_at'].strftime('%H:%M:%S')} UTC")
 
@@ -2276,6 +2381,8 @@ def client_portal(client_id: str, demo: bool = False) -> None:
             f'{esc(snapshot["halt_reason"])}</div>',
             unsafe_allow_html=True,
         )
+
+    proposals_banner(client_id, session, armed)
 
     tabs = st.tabs(
         [

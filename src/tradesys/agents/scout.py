@@ -64,7 +64,9 @@ class ScoutAgent(Agent):
             raw.extend(self._detect(entry.symbol, bars))
 
         ranked = [c for c in (self._apply_memory(c) for c in raw) if c is not None]
-        ranked.sort(key=lambda c: c.confidence, reverse=True)
+        # The client's priority picks survive the per-cycle cut, then confidence.
+        priority = set(self.profile.priority_symbols)
+        ranked.sort(key=lambda c: (c.symbol not in priority, -c.confidence))
         return ranked[: self.profile.max_candidates_per_cycle]
 
     # ------------------------------------------------------------- detection

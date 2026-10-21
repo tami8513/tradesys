@@ -399,7 +399,7 @@ def render_backtest(client_ids: tuple[str, ...]) -> None:
     client_id = client_col.selectbox("לקוח", client_ids, key="bt_client")
     years = years_col.selectbox("שנים אחורה", [1, 2, 3], index=2, key="bt_years")
     run_col.markdown("")
-    if run_col.button("הרץ בדיקה", use_container_width=True, type="primary"):
+    if run_col.button("הרץ בדיקה", width="stretch", type="primary"):
         try:
             with st.spinner("מריץ את הסוכנים על השנים האחרונות…"):
                 save_result(backtest_client(client_id, years, settings), settings.data_dir)
@@ -440,7 +440,7 @@ def render_backtest(client_ids: tuple[str, ...]) -> None:
         legend=dict(orientation="h", y=1.1, x=0),
         xaxis=dict(gridcolor=PALETTE["border"]), yaxis=dict(gridcolor=PALETTE["border"]),
     )
-    st.plotly_chart(figure, use_container_width=True)
+    st.plotly_chart(figure, width="stretch")
 
     def table(rows: list[dict], label: str) -> None:
         frame = pd.DataFrame(rows)
@@ -457,7 +457,7 @@ def render_backtest(client_ids: tuple[str, ...]) -> None:
             })
             .map(lambda v: f"color: {PALETTE['positive'] if v >= 0 else PALETTE['negative']}",
                  subset=["תוחלת R", "רווח/הפסד"]),
-            use_container_width=True, hide_index=True,
+            width="stretch", hide_index=True,
         )
 
     left, right = st.columns(2)
@@ -514,7 +514,7 @@ def render_why_journal(client_ids: tuple[str, ...], armed: bool) -> None:
         label_visibility="collapsed",
         key=f"operator_note_{client_id}",
     )
-    if st.button("שמור הוראה", disabled=not armed, use_container_width=True):
+    if st.button("שמור הוראה", disabled=not armed, width="stretch"):
         if not note.strip():
             st.warning("לא הוזן טקסט.")
         else:
@@ -730,7 +730,7 @@ def render_fleet_table(fleet: pd.DataFrame) -> None:
             lambda v: f"color: {PALETTE['positive'] if v >= 0 else PALETTE['negative']}",
             subset=["יומי", "ממומש היום", "ממומש מצטבר"],
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -762,7 +762,7 @@ def render_accounts(fleet: pd.DataFrame, armed: bool) -> None:
         }
         for client_id in profiles
     ]
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
     st.divider()
     create_col, manage_col = st.columns(2)
@@ -778,7 +778,7 @@ def render_accounts(fleet: pd.DataFrame, armed: bool) -> None:
                 "סיסמה ראשונית", type="password", key="acct_new_pw"
             )
             st.caption("לפחות 8 תווים. מסור אותה ללקוח בערוץ נפרד — היא לא תוצג שוב.")
-            if st.button("פתח חשבון", disabled=not armed, use_container_width=True):
+            if st.button("פתח חשבון", disabled=not armed, width="stretch"):
                 try:
                     store.create(new_client, new_password)
                     st.success(f"נפתח חשבון עבור {new_client}.")
@@ -797,12 +797,12 @@ def render_accounts(fleet: pd.DataFrame, armed: bool) -> None:
             st.caption(f"מצב גישה נוכחי: {state}")
 
             if account.active:
-                if st.button("שלול גישה", disabled=not armed, use_container_width=True):
+                if st.button("שלול גישה", disabled=not armed, width="stretch"):
                     store.set_active(target, False)
                     st.success(f"הגישה של {target} נשללה.")
                     st.rerun()
             else:
-                if st.button("החזר גישה", disabled=not armed, use_container_width=True):
+                if st.button("החזר גישה", disabled=not armed, width="stretch"):
                     store.set_active(target, True)
                     st.success(f"הגישה של {target} הוחזרה.")
                     st.rerun()
@@ -810,7 +810,7 @@ def render_accounts(fleet: pd.DataFrame, armed: bool) -> None:
             reset_password = st.text_input(
                 "סיסמה חדשה", type="password", key="acct_reset_pw"
             )
-            if st.button("אפס סיסמה", disabled=not armed, use_container_width=True):
+            if st.button("אפס סיסמה", disabled=not armed, width="stretch"):
                 try:
                     store.set_password(target, reset_password)
                     st.success("הסיסמה אופסה.")
@@ -856,7 +856,7 @@ def render_registrations(armed: bool) -> None:
                     "אשר ופתח פרופיל",
                     key=f"approve_{registration.client_id}",
                     disabled=not armed,
-                    use_container_width=True,
+                    width="stretch",
                     type="primary",
                 ):
                     try:
@@ -878,7 +878,7 @@ def render_registrations(armed: bool) -> None:
                     "דחה",
                     key=f"reject_{registration.client_id}",
                     disabled=not armed,
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     registrations.decide(registration.client_id, "rejected")
                     accounts_store.set_active(registration.client_id, False)
@@ -901,7 +901,7 @@ def render_registrations(armed: bool) -> None:
                     for r in history
                 ]
             ),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -941,7 +941,7 @@ def render_lifecycle(fleet: pd.DataFrame, armed: bool) -> None:
         if st.button(
             "הקפא לקוח",
             disabled=not armed or not lifecycle.active or confirm != client_id,
-            use_container_width=True,
+            width="stretch",
             type="primary",
         ):
             try:
@@ -964,7 +964,7 @@ def render_lifecycle(fleet: pd.DataFrame, armed: bool) -> None:
         if st.button(
             "הפעל מחדש",
             disabled=not armed or lifecycle.active or confirm_on != client_id,
-            use_container_width=True,
+            width="stretch",
         ):
             reactivate_tenant(session, plan)
             st.success(f"{client_id} הופעל מחדש במסלול {plan}.")
@@ -985,7 +985,7 @@ def render_lifecycle(fleet: pd.DataFrame, armed: bool) -> None:
         if st.button(
             "שחרר עצירה",
             disabled=not armed or confirm_release != client_id,
-            use_container_width=True,
+            width="stretch",
         ):
             session.journal.clear_halt(rebase_peak_to=float(row["equity"]))
             st.success(f"העצירה של {client_id} שוחררה. מגבלת הירידה נמדדת מעכשיו.")
@@ -1171,7 +1171,7 @@ def render_hive(hive: dict) -> None:
                 "ימי החזקה": "{:.1f}",
             }
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -1198,7 +1198,7 @@ def render_hive(hive: dict) -> None:
         yaxis=dict(gridcolor=PALETTE["border"], title="R ממוצע לפי תבנית"),
         xaxis=dict(gridcolor=PALETTE["border"]),
     )
-    st.plotly_chart(figure, use_container_width=True)
+    st.plotly_chart(figure, width="stretch")
 
     st.markdown("**מועמדים לשינוי כללים גלובלי**")
     st.caption(
@@ -1246,13 +1246,13 @@ def render_admin() -> None:
         )
         if armed:
             st.warning("פעולות הניהול פעילות.", icon="⚠")
-        if st.button("רענן נתוני צי", use_container_width=True):
+        if st.button("רענן נתוני צי", width="stretch"):
             load_fleet.clear()
             load_hive.clear()
             st.session_state["_bust"] = bust + 1
             st.rerun()
         st.divider()
-        if st.button("התנתק", use_container_width=True):
+        if st.button("התנתק", width="stretch"):
             logout()
 
     st.markdown(

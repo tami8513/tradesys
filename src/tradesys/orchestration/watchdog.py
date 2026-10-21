@@ -17,10 +17,11 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Protocol
 
+from tradesys.clients.proposals import pending
 from tradesys.core.fileio import locked, write_json_atomic
 
 log = logging.getLogger("tradesys.watchdog")
@@ -64,6 +65,14 @@ def inspect(session) -> list[Alert]:
                     f"unprotected:{symbol}", "critical",
                     f"ל-{symbol} אין פקודת הגנה אצל הברוקר; אם השרת ייפול, אין סטופ",
                 ))
+
+    for proposal in pending(session.tenant.data_dir, datetime.now(timezone.utc)):
+        alerts.append(Alert(
+            f"proposal:{proposal.proposal_id}", "info",
+            f"✋ הרובוט רוצה לקנות {proposal.qty} מניות של {proposal.symbol} בסביבות "
+            f"${proposal.entry:,.2f}, עם הגנה ב-${proposal.stop:,.2f}. אשר או דחה באתר "
+            "עד סוף יום המסחר.",
+        ))
 
     halted, reason = journal.halt_state()
     if halted:
@@ -138,7 +147,10 @@ class AlertBook:
                     "last_sent": last.isoformat(),
                 }
             for key in [k for k in mine if k not in current]:
-                messages.append(f"✅ {client_id} · נפתר: {mine.pop(key)['text']}")
+                closed = mine.pop(key)
+                # A proposal that was answered is not a problem that got fixed.
+                if not key.startswith("proposal:"):
+                    messages.append(f"✅ {client_id} · נפתר: {closed['text']}")
             book[client_id] = mine
             write_json_atomic(self._path, book)
         return messages

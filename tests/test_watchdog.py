@@ -28,6 +28,7 @@ def session(tmp_path, broker_cls=PaperBroker):
     tenant = TenantContext.create("tal_dahan", tmp_path)
     market = SyntheticMarketData()
     return SimpleNamespace(
+        tenant=tenant,
         journal=Journal(tenant),
         broker=broker_cls(tenant, market),
         profile=make_profile(),
@@ -96,3 +97,20 @@ def test_an_alert_is_sent_once_repeated_later_and_closed_when_resolved(tmp_path)
     [resolved] = book.update("tal_dahan", [], NOW + timedelta(hours=8))
     assert resolved.startswith("✅") and "נפתר" in resolved
     assert book.active()["tal_dahan"] == {}
+
+
+def test_a_waiting_proposal_reaches_the_phone_once_and_closes_silently(tmp_path):
+    from tradesys.clients.proposals import propose, resolve
+
+    s = session(tmp_path)
+    proposal = propose(
+        s.tenant.data_dir, make_candidate(symbol="NVDA"), 20,
+        datetime.now(timezone.utc), datetime.now(timezone.utc) + timedelta(hours=3),
+    )
+    book = AlertBook(tmp_path / "alerts.json")
+    [message] = [m for m in book.update("tal_dahan", inspect(s), NOW) if "NVDA" in m]
+    assert "אשר או דחה" in message
+
+    resolve(s.tenant.data_dir, proposal.proposal_id, "approved", "")
+    later = book.update("tal_dahan", inspect(s), NOW + timedelta(minutes=15))
+    assert not [m for m in later if "NVDA" in m]

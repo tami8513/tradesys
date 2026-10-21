@@ -239,6 +239,12 @@ class ClientProfile:
     # Stocks the client picked; the Scout looks at them every cycle, on top of
     # whatever the LeaderHunter chose. Set from the tenant dir, never from YAML.
     pinned_symbols: tuple[str, ...] = ()
+    # Picks the client marked: looked at before the robot's own ideas, and
+    # proposed to the client for approval instead of bought outright.
+    priority_symbols: tuple[str, ...] = ()
+    approval_symbols: tuple[str, ...] = ()
+    # (symbol, ISO trading day, max dollars or None): standing approvals.
+    preapprovals: tuple[tuple[str, str, float | None], ...] = ()
 
     def __post_init__(self) -> None:
         validate_client_id(self.client_id)

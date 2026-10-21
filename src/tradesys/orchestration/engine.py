@@ -17,8 +17,10 @@ from tradesys.clients.loader import ClientRegistry
 from tradesys.clients.profile import ClientProfile
 from tradesys.clients.secrets import EnvSecretResolver, SecretResolver
 from tradesys.clients.picks import apply_picks, read_picks
+from tradesys.clients.proposals import propose, read_proposals, resolve
 from tradesys.clients.tracks import apply_control, read_control, read_track
 from tradesys.core.clock import Clock, SystemClock, trading_day
+from tradesys.core.enums import SetupType, Side
 from tradesys.core.config import Settings
 from tradesys.core.errors import ConfigError
 from tradesys.core.logging import configure, get_logger
@@ -36,9 +38,40 @@ from tradesys.data.regime import MarketRegime, assess_regime
 from tradesys.memory.directives import DirectiveExtractor
 from tradesys.memory.store import LocalVectorMemory, VectorMemory
 from tradesys.orchestration.agent_report import REASON_SEP
+from tradesys.orchestration.why import explain_reason
 from tradesys.persistence.journal import Journal
 
 AgentEvent = tuple[str, str, str, str]
+
+
+def _within_budget(decision: RiskDecision, budget: float | bool) -> RiskDecision:
+    """Trim an approved entry to the client's standing dollar cap, never grow it."""
+    if budget is True:
+        return decision
+    cap = int(budget // decision.order.limit_price)
+    if cap >= decision.qty:
+        return decision
+    if cap < 1:
+        return replace(
+            decision, approved=False, qty=0, risk_amount=0.0, order=None,
+            reasons=(f"standing approval of ${budget:,.0f} buys less than one share",),
+        )
+    return replace(
+        decision,
+        qty=cap,
+        risk_amount=decision.risk_amount * cap / decision.qty,
+        order=replace(decision.order, qty=cap),
+    )
+
+
+def session_close(now: datetime) -> datetime:
+    """16:00 New York on `now`'s trading day: when a proposal stops being valid."""
+    from datetime import time
+    from zoneinfo import ZoneInfo
+
+    new_york = ZoneInfo("America/New_York")
+    day = now.astimezone(new_york).date()
+    return datetime.combine(day, time(16, 0), new_york)
 CORRELATION_BARS = 61     # sixty daily returns
 
 
@@ -335,6 +368,9 @@ class ClientSession:
 
         offense_on = self.profile.risk.conviction_sizing
         plan = self.offense.plan(candidates) if offense_on else [(c, 1.0) for c in candidates]
+        # Offense ranks by edge; the client's priority picks still go first.
+        priority = set(self.profile.priority_symbols)
+        plan.sort(key=lambda item: item[0].symbol not in priority)
 
         for candidate, conviction in plan:
             events.append(
@@ -368,6 +404,30 @@ class ClientSession:
 
             report.approvals += 1
             events.append(("risk", "approved", candidate.symbol, candidate.setup.value))
+            standing = self._standing_approval(candidate.symbol)
+            if standing is not None:
+                decision = _within_budget(decision, standing)
+                if not decision.approved:
+                    events.append(
+                        ("risk", "rejected", candidate.symbol, REASON_SEP.join(decision.reasons))
+                    )
+                    continue
+                events.append(
+                    ("client", "preapproved", candidate.symbol, str(decision.qty))
+                )
+            elif candidate.symbol in self.profile.approval_symbols:
+                proposal = propose(
+                    self.tenant.data_dir,
+                    candidate,
+                    decision.qty,
+                    self.clock.now(),
+                    session_close(self.clock.now()),
+                )
+                if proposal is not None:
+                    events.append(
+                        ("execution", "awaiting_approval", candidate.symbol, str(decision.qty))
+                    )
+                continue
             outcome = self.execution.execute(decision)
             report.outcomes.append(outcome)
             events.append(
@@ -392,6 +452,89 @@ class ClientSession:
         self.journal.log_events(events, report.started_at)
         log.info(report.summary())
         return report
+
+    def execute_proposal(self, proposal_id: str) -> str:
+        """Carry out a proposal the client approved, re-checking it from scratch.
+
+        Returns a one-line Hebrew outcome for the screen. The idea is re-priced at
+        the live trade and the Risk Manager runs again on today's book, so an
+        approval can still be refused if the market or the book moved.
+        """
+        now = self.clock.now()
+        proposal = next(
+            (p for p in read_proposals(self.tenant.data_dir) if p.proposal_id == proposal_id),
+            None,
+        )
+        if proposal is None or proposal.status != "pending":
+            return "הבקשה כבר טופלה."
+        if proposal.expired(now):
+            resolve(self.tenant.data_dir, proposal_id, "expired", "תוקף הבקשה פג")
+            return "תוקף הבקשה פג בסוף יום המסחר."
+
+        candidate = self._at_live_price(
+            Candidate(
+                client_id=self.client_id,
+                symbol=proposal.symbol,
+                setup=SetupType(proposal.setup),
+                side=Side.BUY,
+                entry=proposal.entry,
+                stop=proposal.stop,
+                target=proposal.target,
+                confidence=proposal.confidence,
+                rationale=proposal.rationale,
+                features={"avg_volume": proposal.avg_volume},
+            )
+        )
+        account = self.broker.account()
+        positions = self.broker.positions()
+        stats = self.journal.day_stats(trading_day(self.clock))
+        decision = self.risk.evaluate(
+            candidate,
+            account,
+            positions,
+            stats,
+            self.market_regime(),
+            twin=self._closest_twin(candidate.symbol, positions),
+        )
+        if not decision.approved:
+            note = "שומר הסיכון חסם: " + " · ".join(explain_reason(r) for r in decision.reasons)
+            resolve(self.tenant.data_dir, proposal_id, "blocked", note)
+            self.journal.log_events([("client", "approved", proposal.symbol, note)], now)
+            return note
+        if decision.qty > proposal.qty:
+            # The client agreed to a size; a re-check may shrink it, never grow it.
+            decision = replace(
+                decision,
+                qty=proposal.qty,
+                risk_amount=decision.risk_amount * proposal.qty / decision.qty,
+                order=replace(decision.order, qty=proposal.qty),
+            )
+        outcome = self.execution.execute(decision)
+        if outcome.trade_id is not None:
+            note = f"נקנו {outcome.result.filled_qty} מניות ב-{outcome.result.filled_avg_price:,.2f}"
+            status = "approved"
+        else:
+            note = "הפקודה לא בוצעה: " + explain_reason(outcome.reason or "not filled")
+            status = "blocked"
+        resolve(self.tenant.data_dir, proposal_id, status, note)
+        self.journal.log_events([("client", "approved", proposal.symbol, note)], now)
+        return note
+
+    def _standing_approval(self, symbol: str) -> float | None | bool:
+        """The approved budget for `symbol` today: a dollar cap, True for no cap,
+        or None when there is no standing approval for today."""
+        today = trading_day(self.clock).isoformat()
+        for approved_symbol, day, max_amount in self.profile.preapprovals:
+            if approved_symbol == symbol and day == today:
+                return max_amount if max_amount else True
+        return None
+
+    def decline_proposal(self, proposal_id: str) -> None:
+        proposal = resolve(self.tenant.data_dir, proposal_id, "declined", "הלקוח דחה")
+        if proposal is not None:
+            self.journal.log_events(
+                [("client", "declined", proposal.symbol, "")], self.clock.now()
+            )
 
     def _closest_twin(
         self, symbol: str, positions: Sequence[Position]
