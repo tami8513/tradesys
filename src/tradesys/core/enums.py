@@ -38,6 +38,7 @@ class ExitReason(str, Enum):
     TAKE_PROFIT = "take_profit"
     TIME_STOP = "time_stop"
     BROKER_CLOSED = "broker_closed"   # the position left the broker without us asking
+    EARNINGS_TRIM = "earnings_trim"   # part sold days before an earnings report
     MANUAL = "manual"
 
 

@@ -204,3 +204,18 @@ def test_an_index_robot_partial_fill_keeps_the_shares_and_the_position(tmp_path)
 def test_the_index_robot_path_refuses_an_order_with_a_stop(tmp_path):
     with pytest.raises(BrokerError):
         broker(tmp_path, FakeAlpaca({})).trade(entry())
+
+
+def test_reduce_cancels_the_held_stop_before_selling_part(tmp_path):
+    fake = FakeAlpaca({
+        ("GET", "/v2/orders"): [bracket()],
+        ("POST", "/v2/orders"): [order_payload("filled", 2, 580.0)],
+    })
+
+    result = broker(tmp_path, fake).reduce("SPY", 2)
+
+    assert result.filled_qty == 2
+    cancelled = [c for c in fake.calls if c[0] == "DELETE"]
+    assert ("DELETE", "/v2/orders/leg-stop") in cancelled
+    assert fake.calls.index(("DELETE", "/v2/orders/leg-stop")) < fake.calls.index(("POST", "/v2/orders"))
+    assert fake.payloads[-1]["side"] == "sell" and fake.payloads[-1]["qty"] == "2"

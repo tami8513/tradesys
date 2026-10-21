@@ -27,6 +27,11 @@ class Broker(Protocol):
 
     def close_position(self, symbol: str) -> OrderResult | None: ...
 
+    def reduce(self, symbol: str, qty: int) -> OrderResult:
+        """Sell part of a position. Any resting stop is cancelled first; the caller
+        re-protects the rest with `protect`."""
+        ...
+
     def protect(self, symbol: str, qty: int, stop_price: float) -> None:
         """Make sure a resting server-side stop for `qty` sits at `stop_price`.
 

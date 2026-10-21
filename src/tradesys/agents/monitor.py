@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from tradesys.agents.base import Agent
 from tradesys.agents.execution import ExecutionAgent
@@ -12,14 +15,35 @@ from tradesys.clients.profile import ClientProfile
 from tradesys.core.clock import Clock
 from tradesys.core.enums import ExitReason, Side
 from tradesys.core.errors import TradesysError
+from tradesys.core.fileio import write_json_atomic
 from tradesys.core.models import MemoryRecord, TradeRecord
 from tradesys.core.tenancy import TenantContext
+from tradesys.data.earnings import EarningsCalendar
 from tradesys.data.indicators import closes, sma
 from tradesys.data.market_data import MarketDataProvider
 from tradesys.persistence.journal import Journal
 
 TREND_SMA_PERIOD = 10
 TREND_SLOPE_BARS = 3
+NEW_YORK = ZoneInfo("America/New_York")
+TRIMS_FILE = "earnings_trims.json"
+
+
+def read_trims(tenant_dir: Path) -> dict[str, str]:
+    """trade_id -> the report date it was already trimmed for."""
+    path = Path(tenant_dir) / TRIMS_FILE
+    if not path.exists():
+        return {}
+    try:
+        return {str(k): str(v) for k, v in json.loads(path.read_text(encoding="utf-8")).items()}
+    except (ValueError, OSError, AttributeError):
+        return {}
+
+
+def write_trim(tenant_dir: Path, trade_id: int, report_day: str) -> None:
+    trims = read_trims(tenant_dir)
+    trims[str(trade_id)] = report_day
+    write_json_atomic(Path(tenant_dir) / TRIMS_FILE, trims)
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +127,7 @@ class PositionMonitor(Agent):
         *,
         max_holding_days: int | None = None,
         reconcile_grace_seconds: float = 60.0,
+        earnings: EarningsCalendar | None = None,
     ) -> None:
         super().__init__(tenant, profile, clock)
         for component in (broker, execution, reflection, journal):
@@ -117,6 +142,7 @@ class PositionMonitor(Agent):
         self._reflection = reflection
         self._max_holding_days = max_holding_days
         self._reconcile_grace = timedelta(seconds=reconcile_grace_seconds)
+        self._earnings = earnings
 
     # ------------------------------------------------------------- one sweep
 
@@ -161,6 +187,7 @@ class PositionMonitor(Agent):
 
             signal = self._evaluate(trade, price, symbol in held, now)
             if signal is None and symbol in held and trade.side is Side.BUY:
+                trade = self._trim_before_earnings(symbol, trade, price, report)
                 self._guard(symbol, trade, report)
             if signal is None:
                 continue
@@ -282,6 +309,46 @@ class PositionMonitor(Agent):
                 # raised and this monitor enforces it every pass either way.
                 report.errors.append(f"{symbol}: broker stop not moved ({exc})")
         return updated
+
+    def _trim_before_earnings(
+        self, symbol: str, trade: TradeRecord, price: float, report: MonitorReport
+    ) -> TradeRecord:
+        """Days before a report, sell part of the position, once per report.
+
+        The stop caps an ordinary fall, not the overnight gap after a report: a
+        position stopped at 52 can open at 44. Halving it halves that loss.
+        """
+        limits = self.profile.risk
+        if not limits.earnings_trim_days or self._earnings is None or trade.qty < 2:
+            return trade
+        today = self.clock.now().astimezone(NEW_YORK).date()
+        report_day = self._earnings.lookup(symbol, today).next_date
+        if report_day is None or (report_day - today).days > limits.earnings_trim_days:
+            return trade
+        done = read_trims(self.tenant.data_dir)
+        if done.get(str(trade.trade_id)) == report_day.isoformat():
+            return trade
+
+        qty = max(1, int(trade.qty * limits.earnings_trim_fraction))
+        try:
+            result = self._broker.reduce(symbol, qty)
+        except Exception as exc:  # the stop is re-placed by _guard on this same sweep
+            report.errors.append(f"{symbol}: trim before earnings failed ({exc})")
+            return trade
+        sold = result.filled_qty
+        if not sold:
+            report.errors.append(f"{symbol}: trim before earnings did not fill")
+            return trade
+        exit_price = result.filled_avg_price or price
+        closed = self._journal.split_close(
+            trade.trade_id, sold, exit_price, self.clock.now(), ExitReason.EARNINGS_TRIM.value
+        )
+        write_trim(self.tenant.data_dir, trade.trade_id, report_day.isoformat())
+        if closed is not None:
+            report.closed.append(ClosedTrade(
+                trade=closed, reason=ExitReason.EARNINGS_TRIM, exit_price=exit_price, lessons=(),
+            ))
+        return self._journal.get_trade(trade.trade_id) or trade
 
     def _guard(self, symbol: str, trade: TradeRecord, report: MonitorReport) -> None:
         """Every sweep, make sure the broker holds a stop for this position."""

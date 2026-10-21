@@ -102,6 +102,8 @@ def parse_profile(doc: Mapping[str, Any], path: Path) -> ClientProfile:
             forbidden_setups=_setups(raw_risk.get("forbidden_setups"), path),
             min_price=float(raw_risk.get("min_price", 1.0)),
             max_position_pct_of_adv=float(raw_risk.get("max_position_pct_of_adv", 0.02)),
+            earnings_trim_days=int(raw_risk.get("earnings_trim_days", 0)),
+            earnings_trim_fraction=float(raw_risk.get("earnings_trim_fraction", 0.5)),
             avoid_earnings_within_days=(
                 int(raw_risk["avoid_earnings_within_days"])
                 if raw_risk.get("avoid_earnings_within_days") is not None

@@ -37,6 +37,7 @@ EXIT_NAMES = {
     "take_profit": "יעד",
     "time_stop": "זמן",
     "broker_closed": "נסגר אצל הברוקר",
+    "earnings_trim": "הקטנה לפני דוח רבעוני",
     "manual": "ידני",
 }
 

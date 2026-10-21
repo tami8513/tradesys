@@ -208,6 +208,19 @@ class AlpacaBroker:
             return None
         return _parse_order(self.client_id, self._await_final(payload))
 
+    def reduce(self, symbol: str, qty: int) -> OrderResult:
+        """Sell `qty` shares. A resting stop holds the shares, and Alpaca refuses to
+        sell held shares, so stops are cancelled first; `protect` re-places one."""
+        symbol = symbol.upper()
+        for order in self._working_orders(symbol):
+            if order.get("side") == "sell":
+                self._request("DELETE", f"/v2/orders/{order['id']}", missing_ok=True)
+        payload = self._request("POST", "/v2/orders", {
+            "symbol": symbol, "qty": str(qty), "side": "sell", "type": "market",
+            "time_in_force": "day",
+        })
+        return _parse_order(self.client_id, self._await_final(payload))
+
     def protect(self, symbol: str, qty: int, stop_price: float) -> None:
         """Keep a resting stop at the broker, so the position is guarded even when
         this system is down: move it if it drifted, place a GTC one if none works."""

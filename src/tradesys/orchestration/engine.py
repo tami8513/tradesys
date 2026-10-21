@@ -251,6 +251,7 @@ class TradingSystem:
         market_data = self._market_data(profile)
         broker = self._broker(tenant, profile, market_data)
 
+        earnings = self._earnings()
         reflection = ReflectionAgent(
             tenant, profile, memory, journal, self._extractor, self.clock
         )
@@ -275,9 +276,7 @@ class TradingSystem:
                 reflection.active_directives(),
                 self.clock,
             ),
-            risk=RiskManager(
-                tenant, profile, journal, self.clock, earnings=self._earnings()
-            ),
+            risk=RiskManager(tenant, profile, journal, self.clock, earnings=earnings),
             offense=OffenseAgent(tenant, profile, journal, self.clock),
             hunter=LeaderHunter(tenant, profile, market_data, self.clock),
             execution=execution,
@@ -292,6 +291,7 @@ class TradingSystem:
                 reflection,
                 self.clock,
                 max_holding_days=profile.max_holding_days,
+                earnings=earnings,
             ),
             broker=broker,
             market_data=market_data,

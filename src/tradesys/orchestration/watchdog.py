@@ -93,7 +93,7 @@ def inspect(session) -> list[Alert]:
                 f"ירידה של {drawdown:.1f}% מהשיא, קרוב למגבלת העצירה ({limit:g}%)",
             ))
 
-    for symbol, position in sorted(held.items()):
+    for symbol in sorted(held):
         try:
             bars = session.market_data.history(symbol, timeframe="1Day", limit=2)
         except Exception:  # a data outage is not itself an alert about the book

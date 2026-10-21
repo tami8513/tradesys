@@ -77,6 +77,11 @@ class RiskProfile:
     # opens past the stop and the monitor sells at the open. None disables the
     # filter; any integer blocks entries within that many days of a report.
     avoid_earnings_within_days: int | None = None
+    # Sell part of a position this many calendar days before its earnings
+    # report, once per report: the overnight gap after a report is the loss a
+    # stop cannot cap. 0 turns it off.
+    earnings_trim_days: int = 0
+    earnings_trim_fraction: float = 0.5
 
     # --- market regime ------------------------------------------------------
     # Setups listed here are only permitted while `regime_symbol` trades at or
@@ -158,6 +163,10 @@ class RiskProfile:
             raise ConfigError("position and trade-count limits must be >= 1")
         if self.min_reward_risk < 1.0:
             raise ConfigError("min_reward_risk below 1.0 is not accepted")
+        if self.earnings_trim_days < 0:
+            raise ConfigError("earnings_trim_days must be >= 0")
+        if not 0 < self.earnings_trim_fraction < 1:
+            raise ConfigError("earnings_trim_fraction must be between 0 and 1 (exclusive)")
         if self.avoid_earnings_within_days is not None and self.avoid_earnings_within_days < 0:
             raise ConfigError("avoid_earnings_within_days must be >= 0 when set")
         if self.regime_blocked_setups and self.regime_sma_period < 2:

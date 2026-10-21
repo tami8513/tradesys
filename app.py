@@ -18,7 +18,6 @@ Streamlit אינו מספק אימות ברמת תשתית. השרת מאזין 
 from __future__ import annotations
 
 import html
-import json
 import os
 import sys
 import traceback

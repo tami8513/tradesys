@@ -98,3 +98,11 @@ def test_the_index_robot_explains_itself():
     assert bought.text == "רובוט המדדים קנה 12 יחידות ב-$612.40: כניסה הדרגתית ל-נאסד\"ק 100: עוד שליש"
     assert bought.tone == "positive"
     assert sold.text.startswith("רובוט המדדים מכר 5 יחידות ב-$700.00")
+
+
+def test_a_trim_before_earnings_is_explained():
+    from tradesys.orchestration.why import timeline
+
+    [entry] = timeline([{"agent": "monitor", "kind": "exit", "symbol": "MSFT",
+                         "created_at": "2026-10-27T19:00:00+00:00", "detail": "earnings_trim|0.40"}])
+    assert "מכר חצי מהפוזיציה" in entry.text

@@ -148,6 +148,13 @@ class PaperBroker:
             submitted_at=datetime.now(timezone.utc),
         )
 
+    def reduce(self, symbol: str, qty: int) -> OrderResult:
+        return self.submit(OrderRequest(
+            client_id=self.client_id, symbol=symbol.upper(), side=Side.SELL, qty=qty,
+            order_type=OrderType.MARKET, time_in_force=TimeInForce.DAY,
+            client_order_id=f"paper-reduce-{uuid.uuid4().hex[:12]}",
+        ))
+
     def trade(self, order: OrderRequest) -> OrderResult:
         """Paper orders fill whole, so a plain order is just a submit."""
         return self.submit(order)

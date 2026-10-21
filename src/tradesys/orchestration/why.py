@@ -151,6 +151,11 @@ def _entry(event: dict[str, Any]) -> WhyEntry | None:
         if detail:
             text += f" ({explain_reason(detail)})"
         return WhyEntry(when, symbol, text, "positive" if kind == "filled" else "neutral")
+    if agent == "monitor" and kind == "exit" and detail.startswith("earnings_trim|"):
+        return WhyEntry(
+            when, symbol, "דוח רבעוני בעוד ימים ספורים: סוכן היציאה מכר חצי מהפוזיציה, "
+            "כי ההגנה לא מגינה מפתיחה בקפיצה אחרי דוח. על החצי שנשאר יש הגנה כרגיל.", "neutral",
+        )
     if agent == "monitor" and kind == "exit":
         reason, _, r = detail.partition("|")
         r_value = float(r or 0)

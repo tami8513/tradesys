@@ -240,6 +240,43 @@ class Journal:
             self._bump_realized_pnl(pnl, closed_at)
             return self.get_trade(trade_id)
 
+    def split_close(
+        self, trade_id: int, qty: int, exit_price: float, closed_at: datetime, reason: str
+    ) -> TradeRecord | None:
+        """Close part of an open trade: the sold shares become their own closed trade.
+
+        Every statistic built on closed trades (daily loss, R-multiples, the
+        reflection loop) then sees the partial exit like any other, and the open
+        trade keeps its stop for the shares still held.
+        """
+        with self._lock:
+            row = self._execute(
+                "SELECT * FROM trades WHERE trade_id=? AND client_id=? AND closed_at IS NULL",
+                (trade_id, self.client_id),
+            ).fetchone()
+            if row is None or not 0 < qty < row["qty"]:
+                return None
+            direction = 1 if row["side"] == Side.BUY.value else -1
+            pnl = (exit_price - row["entry_price"]) * qty * direction
+            cursor = self._execute(
+                "INSERT INTO trades (client_id, symbol, setup, side, qty, entry_price, "
+                "stop_price, target_price, opened_at, rationale, initial_stop, peak_price, "
+                "exit_price, closed_at, realized_pnl, exit_reason) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    self.client_id, row["symbol"], row["setup"], row["side"], qty,
+                    row["entry_price"], row["stop_price"], row["target_price"], row["opened_at"],
+                    row["rationale"], row["initial_stop"], row["peak_price"],
+                    exit_price, closed_at.isoformat(), pnl, reason,
+                ),
+            )
+            self._execute(
+                "UPDATE trades SET qty=qty-? WHERE trade_id=? AND client_id=?",
+                (qty, trade_id, self.client_id),
+            )
+            self._bump_realized_pnl(pnl, closed_at)
+            return self.get_trade(int(cursor.lastrowid))
+
     # ---------------------------------------------------------- agent events
 
     def log_events(self, events: Sequence[tuple[str, str, str, str]], when: datetime) -> None:
