@@ -232,6 +232,7 @@ CSS = f"""
   .ts-grade-B {{ background: {PALETTE["gold"]}; }}
   .ts-grade-C {{ background: {PALETTE["muted"]}; }}
   .ts-grade-S {{ background: {PALETTE["warning"]}; font-size: 16px; }}
+  .ts-grade-F {{ background: {PALETTE["accent"]}; font-size: 16px; }}
   .ts-scout ul {{ margin: 8px 0 0; padding-inline-start: 18px; line-height: 1.7; }}
   .ts-scout-plus {{ color: {PALETTE["positive"]}; }}
   .ts-scout-minus {{ color: {PALETTE["warning"]}; }}
@@ -1604,6 +1605,7 @@ def analyst_panel(client_id: str, symbol: str) -> None:
 @st.cache_resource(ttl=3600, show_spinner=False)
 def deep_inputs(client_id: str, symbol: str, day: str) -> dict:
     """Everything the full analysis reads, once per symbol per hour."""
+    from tradesys.agents.money_flow import read_flow
     from tradesys.agents.strategy_lab import LOOKBACK, YEARS, run_lab
     from tradesys.data.scouting_feeds import ScoutingFeeds
 
@@ -1622,6 +1624,7 @@ def deep_inputs(client_id: str, symbol: str, day: str) -> dict:
         "analysts": feeds.analysts(symbol),
         "growth": feeds.growth(symbol),
         "earnings": feeds.earnings_in_days(symbol),
+        "flow": read_flow(bars),
     }
 
 
@@ -1697,7 +1700,7 @@ def deep_panel(client_id: str, session, symbol: str, armed: bool) -> None:
         return
 
     answer = verdict(inputs["reading"], inputs["lab"], inputs["news"],
-                     inputs["analysts"], inputs["growth"], inputs["earnings"])
+                     inputs["analysts"], inputs["growth"], inputs["earnings"], inputs.get("flow"))
     rows = "".join(
         f'<li class="{"ts-scout-plus" if points > 0 else "ts-scout-minus" if points < 0 else ""}">'
         f"{esc(why)} <b>{ltr(f'{points:+d}')}</b></li>"
@@ -2566,9 +2569,9 @@ def scout_card(report) -> str:
     items = "".join(
         f'<li class="ts-scout-plus">{esc(text)}</li>' for text in report.strengths
     ) + "".join(f'<li class="ts-scout-minus">{esc(text)}</li>' for text in report.weaknesses)
-    long_shot = report.grade == "S"
-    badge = "🚀" if long_shot else esc(report.grade)
-    rating = "הימור" if long_shot else f"ציון {report.score:.0f} מתוך 100"
+    badge = {"S": "🚀", "F": "🐋"}.get(report.grade, esc(report.grade))
+    rating = {"S": "הימור", "F": f"קנייה חריגה · פי {report.score:.1f} מהנפח הרגיל"}.get(
+        report.grade, f"ציון {report.score:.0f} מתוך 100")
     return (
         f'<div class="ts-scout"><div class="ts-scout-head">'
         f'<div class="ts-grade ts-grade-{esc(report.grade)}">{badge}</div>'
@@ -2603,10 +2606,18 @@ def tab_scout(client_id: str, session, armed: bool) -> None:
 
     picks = read_picks(session.tenant.data_dir)
     chosen = {p.symbol for p in picks}
-    regulars = [r for r in reports if r.grade != "S"]
+    regulars = [r for r in reports if r.grade not in ("S", "F")]
     long_shots = [r for r in reports if r.grade == "S"]
-    for report in regulars + long_shots:
+    flows = [r for r in reports if r.grade == "F"]
+    for report in regulars + long_shots + flows:
         long_shot = report.grade == "S"
+        if flows and report is flows[0]:
+            st.markdown("###### 🐋 קנייה חריגה היום: כסף שנכנס למניה")
+            st.caption(
+                "מניות שנסחרו היום לפחות פי 2 מהרגיל ונסגרו קרוב לשיא היום, כלומר הרבה קונים ומעט "
+                "מוכרים. בבדיקה של 10 שנים זה לבד לא הוביל לעלייה גבוהה מהרגיל, ולכן ליד כל מניה "
+                "כתוב מה זה עשה בעבר במניה הזו עצמה. לניתוח מלא: פתח את המניה בלשונית גרפים."
+            )
         if long_shot and report is long_shots[0]:
             st.markdown("###### 🚀 הימורים: מניות זולות עם חדשות מעולות ושורט גבוה")
             st.warning(
@@ -2625,7 +2636,7 @@ def tab_scout(client_id: str, session, armed: bool) -> None:
             "נבחרה" if report.symbol in chosen else "➕ הוסף",
             disabled=not armed or report.symbol in chosen or len(picks) >= MAX_PICKS,
             width="stretch",
-            key=f"scout_add_{client_id}_{report.symbol}",
+            key=f"scout_add_{client_id}_{report.grade}_{report.symbol}",
         ):
             try:
                 add_pick(session, picks, report.symbol, ask_first=long_shot)

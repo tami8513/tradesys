@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from tradesys.agents.chart_analyst import ChartReading
+from tradesys.agents.money_flow import FlowReading, describe, flow_points
 from tradesys.agents.strategy_lab import LabReport
 from tradesys.agents.talent_scout import red_flags, sentiment, story_text
 
@@ -42,6 +43,7 @@ def verdict(
     analysts: dict | None = None,
     growth: dict | None = None,
     earnings_in_days: int | None = None,
+    flow: FlowReading | None = None,
 ) -> Verdict:
     reasons: list[tuple[int, str]] = []
 
@@ -101,6 +103,14 @@ def verdict(
             reasons.append((1, f"ההכנסות צומחות ב-{revenue:.0f}% בשנה"))
         if isinstance(eps, (int, float)) and eps < 0:
             reasons.append((-1, "הרווח למניה ירד בשנה האחרונה"))
+
+    if flow is not None:
+        scored = flow_points(flow)
+        if scored is not None:
+            reasons.append(scored)
+        elif flow.unusual_selling:
+            reasons.append((0, describe(flow)[0]))
+        reasons.append((0, describe(flow)[-1]))
 
     if earnings_in_days is not None and earnings_in_days <= 7:
         reasons.append((-1, f"דוח רבעוני בעוד {earnings_in_days} ימים: המחיר עלול לקפוץ לכל כיוון"))

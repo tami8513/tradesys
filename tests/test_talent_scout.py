@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
+from pytest import approx
+
 from tradesys.agents.talent_scout import (
     TalentScout,
     _percentiles,
@@ -191,3 +193,20 @@ def test_a_product_offering_is_not_a_share_sale():
 
     assert red_flags([{"headline": "Updates across its AI offering with Nvidia"}]) == []
     assert red_flags([{"headline": "Company prices $200M public offering"}]) == ["הנפקת מניות"]
+
+
+def test_unusual_buying_gets_its_own_section_with_a_caution():
+    spiked = BARS["SLOW"][:-1] + [Bar(BARS["SLOW"][-1].ts, BARS["SLOW"][-2].close,
+                                      BARS["SLOW"][-2].close * 1.03, BARS["SLOW"][-2].close * 0.999,
+                                      BARS["SLOW"][-2].close * 1.029, 5_000_000)]
+    market = ReplayMarketData({**BARS, "SLOW": spiked})
+    market.set_day(LAST)
+
+    reports = TalentScout(market, names=NAMES.get).shortlist(["FAST", "SLOW"], 5.0)
+    flows = [r for r in reports if r.grade == "F"]
+
+    assert [r.symbol for r in flows] == ["SLOW"]
+    assert flows[0].score == approx(5.0)
+    assert any("קנייה חריגה היום" in s for s in flows[0].strengths)
+    assert any("לא סיבה לקנות" in w for w in flows[0].weaknesses)
+    assert "SLOW" in {r.symbol for r in reports if r.grade in "ABC"}

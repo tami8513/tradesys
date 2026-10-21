@@ -71,3 +71,18 @@ def test_a_red_flag_counts_only_in_a_headline():
     answer = verdict(reading(), lab(), news)
 
     assert not any("דגל אדום" in why for _, why in answer.reasons)
+
+
+def test_money_flow_counts_only_when_this_stock_backs_it():
+    from tradesys.agents.money_flow import FlowReading
+
+    def flow(win):
+        return FlowReading(3.0, 0.9, 0.2, 5, 1, True, False, Evidence(12, win, 2.0, 58.0, 1.0))
+
+    plain = verdict(reading(), lab(), GOOD_NEWS)
+    backed = verdict(reading(), lab(), GOOD_NEWS, flow=flow(75.0))
+    against = verdict(reading(), lab(), GOOD_NEWS, flow=flow(40.0))
+
+    assert backed.score == plain.score + 1
+    assert against.score == plain.score - 1
+    assert any("זרימת הכסף" in why for _, why in backed.reasons)

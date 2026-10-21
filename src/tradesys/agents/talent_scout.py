@@ -25,6 +25,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Sequence
 
+from tradesys.agents.money_flow import describe, read_flow
 from tradesys.core.fileio import write_json_atomic
 from tradesys.data.indicators import atr, closes, sma
 from tradesys.data.market_data import MarketDataProvider
@@ -40,6 +41,9 @@ LONG_SHOT_MIN_DAYS_TO_COVER = 3.0    # trading days the shorts need to buy back
 LONG_SHOT_MIN_STORIES = 2
 LONG_SHOT_MIN_TONE = 3
 LONG_SHOTS = 5
+FLOW_NAMES = 5
+FLOW_CAUTION = ("בבדיקה של 10 שנים על המניות הגדולות, קנייה חריגה לבדה לא הובילה לעלייה "
+                "גבוהה מהרגיל. זה סימן ששווה לבדוק, לא סיבה לקנות")
 WEIGHTS = {"form": 30, "relative": 20, "news": 15, "analysts": 20, "growth": 15}
 _TICKER = re.compile(r"^[A-Z]{1,5}$")
 # On Nasdaq a fifth letter W, U, R or Q marks a warrant, unit, right or bankruptcy.
@@ -185,6 +189,7 @@ class TalentScout:
             "r6m": (last / values[-126] - 1) * 100 if len(values) >= 126 else 0.0,
             "atr_pct": (atr(bars) or 0.0) / last * 100,
             "extended": (last / sma50 - 1) * 100,
+            "flow": read_flow(bars),
         }
 
     def _stories(self, symbols: list[str]) -> dict[str, list[dict]]:
@@ -203,7 +208,35 @@ class TalentScout:
         forms = {s: f for s in pool if (f := self._form(s)) is not None}
         main = {s: f for s, f in forms.items() if f["lane"] == "main"}
         cheap = {s: f for s, f in forms.items() if f["lane"] == "long_shot"}
-        return self._regulars(main, benchmark_6m) + self._long_shots(cheap)
+        return self._regulars(main, benchmark_6m) + self._long_shots(cheap) + self._money_flow(forms)
+
+    def _money_flow(self, forms: dict[str, dict]) -> list[ScoutReport]:
+        """Names with unusual buying today: heavy volume, closing near the high (grade F)."""
+        reports = []
+        for symbol, form in forms.items():
+            flow = form["flow"]
+            if flow is None or not flow.unusual_buying:
+                continue
+            report = ScoutReport(
+                symbol=symbol,
+                name=self._names(symbol) or symbol,
+                sector=sector_label(symbol) if symbol in SECTORS else "",
+                price=form["price"],
+                grade="F",
+                score=flow.relative_volume,
+                parts={"relative_volume": flow.relative_volume, "money_flow": flow.money_flow},
+                strengths=describe(flow),
+            )
+            evidence = flow.evidence
+            if evidence is not None and evidence.cases >= 8:
+                line = (f"במניה הזו, אחרי קנייה חריגה המחיר עלה תוך חודש ב-{evidence.win_rate:.0f}% "
+                        f"מהמקרים, מול {evidence.base_win_rate:.0f}% ביום רגיל")
+                good = evidence.win_rate - evidence.base_win_rate >= 5
+                (report.strengths if good else report.weaknesses).append(line)
+            report.weaknesses.append(FLOW_CAUTION)
+            reports.append(report)
+        reports.sort(key=lambda r: r.score, reverse=True)
+        return reports[:FLOW_NAMES]
 
     def _regulars(self, forms: dict[str, dict], benchmark_6m: float) -> list[ScoutReport]:
         if not forms:
