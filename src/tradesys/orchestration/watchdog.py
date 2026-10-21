@@ -182,6 +182,15 @@ class LogNotifier:
         log.warning("ALERT %s", text)
 
 
+def greet_once(notifier: Notifier, flag: Path) -> None:
+    """The first time a phone channel is set up, say so on it: proof that it works."""
+    if isinstance(notifier, LogNotifier) or flag.exists():
+        return
+    notifier.send("✅ ההתראות של tradesys מחוברות. מעכשיו תקבל כאן הודעה כשמשהו דורש את תשומת לבך.")
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(flag, {"greeted_at": datetime.now(timezone.utc).isoformat()})
+
+
 def notifier_from_env() -> Notifier:
     token = os.getenv("TRADESYS_TELEGRAM__BOT_TOKEN", "")
     chat_id = os.getenv("TRADESYS_TELEGRAM__CHAT_ID", "")

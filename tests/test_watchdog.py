@@ -114,3 +114,18 @@ def test_a_waiting_proposal_reaches_the_phone_once_and_closes_silently(tmp_path)
     resolve(s.tenant.data_dir, proposal.proposal_id, "approved", "")
     later = book.update("tal_dahan", inspect(s), NOW + timedelta(minutes=15))
     assert not [m for m in later if "NVDA" in m]
+
+
+def test_a_new_phone_channel_is_greeted_once(tmp_path):
+    from tradesys.orchestration.watchdog import LogNotifier, greet_once
+
+    sent: list[str] = []
+    phone = SimpleNamespace(send=sent.append)
+    flag = tmp_path / "_platform" / "telegram_greeted.json"
+
+    greet_once(phone, flag)
+    greet_once(phone, flag)
+    greet_once(LogNotifier(), tmp_path / "other.json")
+
+    assert len(sent) == 1 and "מחוברות" in sent[0]
+    assert not (tmp_path / "other.json").exists()

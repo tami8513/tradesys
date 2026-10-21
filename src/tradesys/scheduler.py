@@ -29,6 +29,7 @@ from tradesys.orchestration.watchdog import (
     AlertBook,
     Notifier,
     cycle_failure,
+    greet_once,
     inspect,
     notifier_from_env,
 )
@@ -116,6 +117,10 @@ def run_forever(
     log.info("scheduler started: cycle every %.0f min while the market is open", cycle_minutes)
     book = AlertBook(system.settings.data_dir / "_platform" / "alerts.json")
     notifier = notifier or notifier_from_env()
+    try:
+        greet_once(notifier, system.settings.data_dir / "_platform" / "telegram_greeted.json")
+    except Exception:  # a phone channel being down must never stop trading
+        log.exception("could not send the alerts greeting")
     while True:
         try:
             status = clock.status()
