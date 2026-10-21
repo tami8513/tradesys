@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 
 from tradesys.agents.chart_analyst import ChartReading
 from tradesys.agents.money_flow import FlowReading, describe, flow_points
+from tradesys.agents.valuation import judge, read_valuation
 from tradesys.agents.strategy_lab import LabReport
 from tradesys.agents.talent_scout import red_flags, sentiment, story_text
 
@@ -96,6 +97,12 @@ def verdict(
             reasons.append((1, f"{bullish} מתוך {total} אנליסטים ממליצים לקנות"))
         elif bearish > bullish:
             reasons.append((-1, "יותר אנליסטים ממליצים למכור מאשר לקנות"))
+
+    value = read_valuation(growth, (growth or {}).get("pe_history"))
+    if value is not None:
+        good, bad, points = judge(value)
+        reasons.append((points, f"שווי: {value.summary()}"))
+        reasons += [(0, line) for line in good + bad]
 
     if growth:
         revenue, eps = growth.get("revenueGrowthTTMYoy"), growth.get("epsGrowthTTMYoy")

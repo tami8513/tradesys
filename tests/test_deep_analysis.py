@@ -86,3 +86,12 @@ def test_money_flow_counts_only_when_this_stock_backs_it():
     assert backed.score == plain.score + 1
     assert against.score == plain.score - 1
     assert any("זרימת הכסף" in why for _, why in backed.reasons)
+
+
+def test_valuation_shows_and_moves_the_verdict_only_at_the_extremes():
+    cheap = verdict(reading(), lab(), GOOD_NEWS,
+                    growth={"peTTM": 20.0, "epsGrowth5Y": 40.0, "pe_history": [30.0] * 12})
+    plain = verdict(reading(), lab(), GOOD_NEWS)
+
+    assert any(why.startswith("שווי: מכפיל רווח 20.0") for _, why in cheap.reasons)
+    assert cheap.score == plain.score + 1

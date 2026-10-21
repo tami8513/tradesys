@@ -13,6 +13,7 @@ from typing import Callable
 
 import httpx
 
+from tradesys.agents.valuation import FORWARD_KEYS, GROWTH_KEYS, TRAILING_KEYS
 from tradesys.data.earnings import FinnhubEarningsCalendar
 
 DATA_URL = "https://data.alpaca.markets"
@@ -123,13 +124,19 @@ class ScoutingFeeds:
             return None
 
     def growth(self, symbol: str) -> dict | None:
-        """Year-over-year revenue and earnings-per-share growth, in percent."""
+        """Growth and valuation: revenue and EPS growth in %, P/E today and forward, and
+        "pe_history", the last five years of quarterly P/E."""
         if not self._finnhub_key:
             return None
         try:
-            metric = self._finnhub("/stock/metric", symbol, metric="all").get("metric") or {}
-            keys = ("revenueGrowthTTMYoy", "epsGrowthTTMYoy")
-            found = {k: float(metric[k]) for k in keys if isinstance(metric.get(k), (int, float))}
+            payload = self._finnhub("/stock/metric", symbol, metric="all")
+            metric = payload.get("metric") or {}
+            keys = ("revenueGrowthTTMYoy", "epsGrowthTTMYoy", *GROWTH_KEYS, *TRAILING_KEYS, *FORWARD_KEYS)
+            found: dict = {k: float(metric[k]) for k in keys if isinstance(metric.get(k), (int, float))}
+            quarters = ((payload.get("series") or {}).get("quarterly") or {}).get("peTTM") or []
+            history = [float(q["v"]) for q in quarters[:20] if isinstance(q.get("v"), (int, float))]
+            if history:
+                found["pe_history"] = history
             return found or None
         except (httpx.HTTPError, AttributeError, TypeError, ValueError):
             return None

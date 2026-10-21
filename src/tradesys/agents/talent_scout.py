@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from tradesys.agents.money_flow import describe, read_flow
+from tradesys.agents.valuation import judge, read_valuation
 from tradesys.core.fileio import write_json_atomic
 from tradesys.data.indicators import atr, closes, sma
 from tradesys.data.market_data import MarketDataProvider
@@ -90,6 +91,7 @@ class ScoutReport:
     strengths: list[str] = field(default_factory=list)
     weaknesses: list[str] = field(default_factory=list)
     headlines: list[str] = field(default_factory=list)
+    valuation: str = ""      # P/E today, forward, PEG and the stock's own median
 
 
 def _words(words: Sequence[str]) -> re.Pattern[str]:
@@ -271,6 +273,12 @@ class TalentScout:
             metrics = self._growth(symbol)
             if metrics:
                 parts["growth"] = self._describe_growth(report, metrics)
+                value = read_valuation(metrics, metrics.get("pe_history"))
+                if value is not None:
+                    good, bad, _ = judge(value)
+                    report.strengths += good
+                    report.weaknesses += bad
+                    report.valuation = value.summary()
             self._describe_risk(report, form)
 
             weight = sum(WEIGHTS[k] for k in parts)

@@ -2586,7 +2586,8 @@ def scout_card(report) -> str:
         f'<div class="ts-grade ts-grade-{esc(report.grade)}">{badge}</div>'
         f'<div><b>{esc(report.symbol)}</b> · {esc(report.name)}{sector}'
         f'<div class="ts-agent-when">{ltr(money(report.price))} · {rating}</div>'
-        f'</div></div><ul>{items}</ul></div>'
+        + (f'<div class="ts-agent-when">📊 {esc(report.valuation)}</div>' if report.valuation else "")
+        + f'</div></div><ul>{items}</ul></div>'
     )
 
 

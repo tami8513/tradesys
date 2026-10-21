@@ -210,3 +210,11 @@ def test_unusual_buying_gets_its_own_section_with_a_caution():
     assert any("קנייה חריגה היום" in s for s in flows[0].strengths)
     assert any("לא סיבה לקנות" in w for w in flows[0].weaknesses)
     assert "SLOW" in {r.symbol for r in reports if r.grade in "ABC"}
+
+
+def test_the_scout_shows_pe_and_reads_it():
+    reports = scout(growth=lambda symbol: {"peTTM": 30.0, "forwardPE": 24.0, "epsGrowth5Y": 40.0,
+                                           "revenueGrowthTTMYoy": 30.0}).shortlist(["FAST"], 5.0)
+
+    assert reports[0].valuation == "מכפיל רווח 30.0 · מכפיל עתידי 24.0 · PEG 0.8"
+    assert any("השוק מצפה שהרווח יגדל" in s for s in reports[0].strengths)
