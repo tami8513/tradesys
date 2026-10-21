@@ -303,7 +303,10 @@ def backtest_client(client_id: str, years: int, settings: Settings) -> BacktestR
 
     if not (settings.market_data_key_id and settings.market_data_secret_key):
         raise RuntimeError("a historical test needs the Alpaca market-data keys")
-    profile = TradingSystem(settings).registry.load(client_id)
+    # The client's own settings (risk meter, autopilot, picks), as the live robot
+    # runs them. Nobody answers "ask me first" in a replay, so those picks trade.
+    profile = TradingSystem(settings).client_profile(client_id)
+    profile = replace(profile, approval_symbols=(), preapprovals=())
     source = AlpacaMarketData(settings.market_data_key_id, settings.market_data_secret_key)
     bars = fetch_bars(source, profile.symbols, years, settings.data_dir / "_platform" / "bars_cache")
     with tempfile.TemporaryDirectory() as scratch:

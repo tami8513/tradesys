@@ -236,16 +236,21 @@ class TradingSystem:
             return AlpacaBroker(tenant, self.secrets.broker_credentials(profile))
         raise ConfigError(f"unknown broker {profile.broker.name!r}")
 
+    def client_profile(self, client_id: str) -> ClientProfile:
+        """The profile as the client set it: the YAML, their risk meter and their picks.
+
+        The client's risk-meter level sets the four loss limits, capped by the
+        operator's max_risk_level; everything else stays as the YAML sets it.
+        """
+        data_dir = self.tenant(client_id).data_dir
+        profile = apply_control(
+            self.registry.load(client_id), read_control(data_dir), read_track(data_dir)
+        )
+        return apply_picks(profile, read_picks(data_dir))
+
     def for_client(self, client_id: str) -> "ClientSession":
         tenant = self.tenant(client_id)
-        # The client's risk-meter level sets the four loss limits, capped by the
-        # operator's max_risk_level; everything else stays as the YAML sets it.
-        profile = apply_control(
-            self.registry.load(client_id),
-            read_control(tenant.data_dir),
-            read_track(tenant.data_dir),
-        )
-        profile = apply_picks(profile, read_picks(tenant.data_dir))
+        profile = self.client_profile(client_id)
         journal = Journal(tenant)
         memory = self._memory(tenant)
         market_data = self._market_data(profile)

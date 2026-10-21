@@ -72,3 +72,26 @@ def test_a_full_replay_produces_a_coherent_result(tmp_path):
     )
     assert result.max_drawdown_pct >= 0
     assert result.trades == sum(row["trades"] for row in result.by_setup)
+
+
+def test_the_historical_test_replays_the_clients_own_settings(tmp_path):
+    """A replay of the YAML alone tested limits the client is not running."""
+    from pathlib import Path
+
+    from tradesys.clients.picks import Pick, write_picks
+    from tradesys.clients.tracks import write_control, write_track
+    from tradesys.core.config import Settings
+    from tradesys.orchestration.engine import TradingSystem
+
+    root = Path(__file__).resolve().parent.parent
+    system = TradingSystem(Settings(clients_dir=root / "clients", data_dir=tmp_path))
+    data_dir = system.tenant("tal_dahan").data_dir
+    write_control(data_dir, "custom", None, 100_000.0)
+    write_track(data_dir, 4, 100_000.0, acknowledged=True, max_level=5)
+    write_picks(data_dir, [Pick("LCID", ask_first=True)])
+
+    profile = system.client_profile("tal_dahan")
+
+    assert profile.risk.max_drawdown_pct == 30.0
+    assert profile.risk.max_daily_loss_pct == 3.0
+    assert "LCID" in profile.symbols
