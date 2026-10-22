@@ -45,6 +45,32 @@ class TelegramBot:
             log.exception("telegram send failed")
             return None
 
+    def check(self) -> tuple[bool, str]:
+        """Send a test message and say in plain Hebrew what is wrong, if anything."""
+        try:
+            me = self._http.post(API.format(token=self._token, method="getMe"), json={}, timeout=15)
+            if me.status_code == 401:
+                return False, ("הטוקן לא תקין או שבוטל. ב-BotFather שלח /revoke, בחר את הבוט, והעתק "
+                               "ל-Render את הטוקן החדש בדיוק כמו שהוא.")
+            name = (me.json().get("result") or {}).get("username", "")
+            sent = self._http.post(
+                API.format(token=self._token, method="sendMessage"),
+                json={"chat_id": self.chat_id, "text": "🧪 הודעת בדיקה מ-tradesys: הטלפון מחובר."},
+                timeout=15,
+            )
+        except Exception as exc:  # the network itself: tell the operator, do not crash the page
+            return False, f"אין חיבור לטלגרם מהשרת ({type(exc).__name__})."
+        if sent.status_code == 200:
+            return True, f"נשלחה הודעת בדיקה מהבוט @{name}. בדוק את הטלפון."
+        reason = str(sent.json().get("description", "")).lower()
+        if sent.status_code == 403 or "initiate" in reason or "blocked" in reason:
+            return False, (f"הבוט @{name} לא יכול לשלוח לך עדיין. פתח אותו בטלגרם, לחץ Start "
+                           "ושלח לו הודעה כלשהי, ואז לחץ שוב על הבדיקה.")
+        if "chat not found" in reason:
+            return False, ("מספר הצ'אט לא נכון. ב-@userinfobot בדוק את המספר שליד Id, ועדכן ב-Render את "
+                           "TRADESYS_TELEGRAM__CHAT_ID.")
+        return False, f"טלגרם דחה את ההודעה: {sent.json().get('description', sent.status_code)}"
+
     def updates(self, offset: int, timeout: int = 25) -> list[dict]:
         return self._call("getUpdates", {"offset": offset, "timeout": timeout,
                                          "allowed_updates": ["callback_query"]},

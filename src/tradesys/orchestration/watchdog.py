@@ -176,7 +176,10 @@ def greet_once(notifier: Notifier, flag: Path) -> None:
     """The first time a phone channel is set up, say so on it: proof that it works."""
     if isinstance(notifier, LogNotifier) or flag.exists():
         return
-    notifier.send("✅ ההתראות של tradesys מחוברות. מעכשיו תקבל כאן הודעה כשמשהו דורש את תשומת לבך.")
+    # Marked only once it actually went out: a greeting that failed (the bot not
+    # started yet, a bad token) is tried again on the next start.
+    if notifier.send("✅ ההתראות של tradesys מחוברות. מעכשיו תקבל כאן הודעה כשמשהו דורש את תשומת לבך.") is None:
+        return
     flag.parent.mkdir(parents=True, exist_ok=True)
     write_json_atomic(flag, {"greeted_at": datetime.now(timezone.utc).isoformat()})
 

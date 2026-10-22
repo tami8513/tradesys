@@ -396,6 +396,21 @@ def load_agent_report(client_ids: tuple[str, ...], days: int, bust: int) -> list
     ))
 
 
+def render_phone() -> None:
+    """Is the phone connected? A test message that names the problem if it is not."""
+    from tradesys.orchestration.telegram import TelegramBot
+    from tradesys.orchestration.watchdog import notifier_from_env
+
+    notifier = notifier_from_env()
+    with st.expander("📱 טלגרם: " + ("מוגדר" if isinstance(notifier, TelegramBot) else "לא מוגדר")):
+        if not isinstance(notifier, TelegramBot):
+            st.warning("המשתנים TRADESYS_TELEGRAM__BOT_TOKEN ו-TRADESYS_TELEGRAM__CHAT_ID לא מוגדרים ב-Render.")
+            return
+        if st.button("שלח הודעת בדיקה", key="phone_check"):
+            ok, detail = notifier.check()
+            (st.success if ok else st.error)(detail)
+
+
 def render_agents(client_ids: tuple[str, ...], bust: int) -> None:
     st.markdown("##### דוח סוכנים")
     st.caption(
@@ -1371,6 +1386,7 @@ def render_admin() -> None:
         on_change="rerun",
     )
     with tabs[0]:
+        render_phone()
         render_fleet(fleet)
     with tabs[1]:
         render_agents(client_ids, bust)

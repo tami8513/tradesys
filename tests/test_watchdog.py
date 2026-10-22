@@ -120,7 +120,7 @@ def test_a_new_phone_channel_is_greeted_once(tmp_path):
     from tradesys.orchestration.watchdog import LogNotifier, greet_once
 
     sent: list[str] = []
-    phone = SimpleNamespace(send=sent.append)
+    phone = SimpleNamespace(send=lambda text: sent.append(text) or 1)
     flag = tmp_path / "_platform" / "telegram_greeted.json"
 
     greet_once(phone, flag)
@@ -129,3 +129,13 @@ def test_a_new_phone_channel_is_greeted_once(tmp_path):
 
     assert len(sent) == 1 and "מחוברות" in sent[0]
     assert not (tmp_path / "other.json").exists()
+
+
+
+def test_a_greeting_that_failed_is_tried_again(tmp_path):
+    from tradesys.orchestration.watchdog import greet_once
+
+    flag = tmp_path / "telegram_greeted.json"
+    greet_once(SimpleNamespace(send=lambda text: None), flag)
+
+    assert not flag.exists()

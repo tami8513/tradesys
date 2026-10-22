@@ -138,3 +138,36 @@ def test_a_button_press_reaches_the_right_clients_question(tmp_path, clock):
     assert answer_button(system, f"m|tal_dahan|{question['id']}|run").startswith("RIVN: היעד הוסר")
     assert answer_button(system, f"m|stranger|{question['id']}|run") is None
     assert answer_button(system, "garbage") is None
+
+
+class Reply:
+    def __init__(self, status: int, body: dict) -> None:
+        self.status_code, self._body = status, body
+
+    def json(self) -> dict:
+        return self._body
+
+
+def bot_answering(get_me: Reply, send: Reply) -> TelegramBot:
+    class Http:
+        def post(self, url, json, timeout):
+            return get_me if url.endswith("getMe") else send
+
+    return TelegramBot("token", "123", http=Http())
+
+
+def test_the_phone_check_names_the_problem():
+    me = Reply(200, {"result": {"username": "Tal_keren_alerts_bot"}})
+
+    ok, text = bot_answering(me, Reply(200, {"ok": True})).check()
+    assert ok and "@Tal_keren_alerts_bot" in text
+
+    ok, text = bot_answering(Reply(401, {}), Reply(200, {})).check()
+    assert not ok and "/revoke" in text
+
+    blocked = Reply(403, {"description": "Forbidden: bot can't initiate conversation with a user"})
+    ok, text = bot_answering(me, blocked).check()
+    assert not ok and "לחץ Start" in text
+
+    ok, text = bot_answering(me, Reply(400, {"description": "Bad Request: chat not found"})).check()
+    assert not ok and "מספר הצ'אט לא נכון" in text
