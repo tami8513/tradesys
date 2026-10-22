@@ -72,6 +72,7 @@ def test_every_buy_and_sale_becomes_one_message(tmp_path, clock):
     [sold] = new_messages(stack.journal, data_dir, clock.now() + timedelta(seconds=1), NAMES)
     assert sold.startswith("🔻 מכירה בהפסד · RIVN")
     assert "ההגנה הופעלה ועצרה את ההפסד" in sold
+    assert "💵 נטו לכיס: $-628" in sold and "מס $0" in sold      # a first loss has no tax to give back
     assert stack.journal.get_trade(trade_id).closed_at is not None
 
     assert new_messages(stack.journal, data_dir, clock.now() + timedelta(seconds=2), NAMES) == []

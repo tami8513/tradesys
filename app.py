@@ -2051,21 +2051,60 @@ def tab_agents(snapshot: dict, session, armed: bool) -> None:
                 except (TradesysError, ValueError) as exc:
                     st.error(str(exc))
 
-    st.markdown("##### עסקאות שנסגרו")
-    closed = snapshot["closed_df"]
-    if closed.empty:
+    closed_statement(session)
+
+
+def closed_statement(session) -> None:
+    """Closed trades as a statement: units, commissions, success fee, tax and the loss offset."""
+    from tradesys.clients.statement import SUCCESS_FEE, TAX_RATE, statement
+
+    st.markdown("##### 📒 עסקאות שנסגרו: חשבון מלא")
+    trades = session.journal.closed_trades(limit=5000)
+    if not trades:
         st.caption("אין עדיין עסקאות סגורות.")
-    else:
+        return
+    carry = st.toggle(
+        "להעביר הפסד שלא קוזז לשנה הבאה",
+        key="statement_carry",
+        help="לפי החוק בישראל, הפסד הון שלא קוזז באותה שנה מותר להעביר לשנים הבאות "
+             "ולקזז מרווחי הון. כבוי: כל שנה מתחילה מאפס.",
+    )
+    st.caption(
+        f"עמלות ברוקר משוערות: חצי סנט למניה, מינימום $1 לפעולה, כמו ב-Interactive Brokers "
+        f"(בחשבון הנייר של Alpaca אין עמלות בפועל). דמי הצלחה {SUCCESS_FEE:.0%} רק על רווח חדש: "
+        f"אחרי הפסד הם נגבים שוב רק כשההפסד חזר. מס רווחי הון {TAX_RATE:.0%} על הרווח של השנה "
+        "אחרי קיזוז הפסדים; מס שלילי הוא החזר בקיזוז, כמו מגן מס של ברוקר ישראלי. "
+        "החישוב הוא הערכה; לדיווח לרשויות כדאי להיעזר ברואה חשבון."
+    )
+    for year in reversed(statement(trades, carry_losses=carry)):
+        st.markdown(f"###### שנת {year.year} · {year.trades} עסקאות")
+        cols = st.columns(6)
+        cols[0].metric("רווח/הפסד ברוטו", f"${year.gross:+,.0f}")
+        cols[1].metric("עמלות", f"${year.commissions:,.0f}")
+        cols[2].metric(f"דמי הצלחה {SUCCESS_FEE:.0%}", f"${year.fee:,.0f}")
+        cols[3].metric(f"מס {TAX_RATE:.0%}", f"${year.tax:,.0f}")
+        cols[4].metric("נטו לכיס", f"${year.take_home:+,.0f}")
+        cols[5].metric("הפסד שנשאר לקיזוז", f"${year.loss_left:,.0f}")
+        if year.carried_in:
+            st.caption(f"הפסד שהועבר משנה קודמת: ${year.carried_in:,.0f}")
+        table = pd.DataFrame([
+            {
+                "נסגר": line.closed_at, "מניה": line.symbol, "יחידות": line.qty,
+                "קנייה": line.entry, "מכירה": line.exit, "ברוטו": line.gross,
+                "עמלות": line.commissions, "נטו לפני מס": line.net, "דמי הצלחה": line.fee,
+                "מס (מינוס = החזר)": line.tax, "נטו לכיס": line.take_home,
+                "הפסד לקיזוז": line.loss_left,
+            }
+            for line in reversed(year.lines)
+        ])
+        money_cols = ["ברוטו", "נטו לפני מס", "מס (מינוס = החזר)", "נטו לכיס"]
         st.dataframe(
-            closed.iloc[::-1].style.format(
-                {
-                    "כניסה": "${:,.2f}",
-                    "יציאה": "${:,.2f}",
-                    "רווח/הפסד": "{:+,.2f}",
-                    "R": "{:+.2f}",
-                    "מצטבר": "{:+,.2f}",
-                }
-            ),
+            table.style.format({
+                "קנייה": "${:,.2f}", "מכירה": "${:,.2f}", "עמלות": "${:,.2f}",
+                "דמי הצלחה": "${:,.2f}", "הפסד לקיזוז": "${:,.2f}",
+                **{c: "{:+,.2f}" for c in money_cols},
+            }).map(lambda v: f"color: {PALETTE['positive'] if v > 0 else PALETTE['negative'] if v < 0 else ''}",
+                   subset=["ברוטו", "נטו לכיס"]),
             width="stretch",
             hide_index=True,
         )
