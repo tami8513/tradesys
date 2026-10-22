@@ -7,6 +7,7 @@ press a button that sells a position.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from typing import Any, Callable
@@ -23,6 +24,8 @@ class TelegramBot:
 
         self._token = token
         self.chat_id = str(chat_id)
+        # Identifies the channel without storing the token: a new token or chat greets again.
+        self.fingerprint = hashlib.sha256(f"{token}|{chat_id}".encode()).hexdigest()[:16]
         self._http = http or httpx
 
     def _call(self, method: str, payload: dict, timeout: float = 15) -> Any:

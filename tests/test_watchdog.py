@@ -139,3 +139,16 @@ def test_a_greeting_that_failed_is_tried_again(tmp_path):
     greet_once(SimpleNamespace(send=lambda text: None), flag)
 
     assert not flag.exists()
+
+
+
+def test_a_new_token_or_chat_is_greeted_again(tmp_path):
+    from tradesys.orchestration.watchdog import greet_once
+
+    sent: list[str] = []
+    flag = tmp_path / "telegram_greeted.json"
+    greet_once(SimpleNamespace(send=lambda t: sent.append(t) or 1, fingerprint="old"), flag)
+    greet_once(SimpleNamespace(send=lambda t: sent.append(t) or 1, fingerprint="old"), flag)
+    greet_once(SimpleNamespace(send=lambda t: sent.append(t) or 1, fingerprint="new"), flag)
+
+    assert len(sent) == 2

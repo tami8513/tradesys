@@ -173,15 +173,22 @@ class LogNotifier:
 
 
 def greet_once(notifier: Notifier, flag: Path) -> None:
-    """The first time a phone channel is set up, say so on it: proof that it works."""
-    if isinstance(notifier, LogNotifier) or flag.exists():
+    """When a phone channel is set up or changed, say so on it: proof that it works."""
+    if isinstance(notifier, LogNotifier):
         return
+    fingerprint = getattr(notifier, "fingerprint", "")
+    if flag.exists():
+        try:
+            if json.loads(flag.read_text(encoding="utf-8")).get("fingerprint", "") == fingerprint:
+                return
+        except ValueError:
+            pass
     # Marked only once it actually went out: a greeting that failed (the bot not
     # started yet, a bad token) is tried again on the next start.
     if notifier.send("✅ ההתראות של tradesys מחוברות. מעכשיו תקבל כאן הודעה כשמשהו דורש את תשומת לבך.") is None:
         return
     flag.parent.mkdir(parents=True, exist_ok=True)
-    write_json_atomic(flag, {"greeted_at": datetime.now(timezone.utc).isoformat()})
+    write_json_atomic(flag, {"greeted_at": datetime.now(timezone.utc).isoformat(), "fingerprint": fingerprint})
 
 
 def notifier_from_env() -> Notifier:
