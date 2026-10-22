@@ -152,3 +152,15 @@ def test_a_new_token_or_chat_is_greeted_again(tmp_path):
     greet_once(SimpleNamespace(send=lambda t: sent.append(t) or 1, fingerprint="new"), flag)
 
     assert len(sent) == 2
+
+
+def test_a_pasted_token_loses_stray_spaces_and_quotes(monkeypatch):
+    from tradesys.orchestration.telegram import TelegramBot
+    from tradesys.orchestration.watchdog import notifier_from_env
+
+    monkeypatch.setenv("TRADESYS_TELEGRAM__BOT_TOKEN", ' "123:abc"\n')
+    monkeypatch.setenv("TRADESYS_TELEGRAM__CHAT_ID", " 42 ")
+    bot = notifier_from_env()
+
+    assert isinstance(bot, TelegramBot) and bot.chat_id == "42"
+    assert bot.fingerprint == TelegramBot("123:abc", "42").fingerprint

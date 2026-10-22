@@ -192,6 +192,7 @@ def greet_once(notifier: Notifier, flag: Path) -> None:
 
 
 def notifier_from_env() -> Notifier:
-    token = os.getenv("TRADESYS_TELEGRAM__BOT_TOKEN", "")
-    chat_id = os.getenv("TRADESYS_TELEGRAM__CHAT_ID", "")
+    # Pasted on a phone, a token often brings a space or a line break with it.
+    token = os.getenv("TRADESYS_TELEGRAM__BOT_TOKEN", "").strip().strip('"').strip()
+    chat_id = os.getenv("TRADESYS_TELEGRAM__CHAT_ID", "").strip().strip('"').strip()
     return TelegramBot(token, chat_id) if token and chat_id else LogNotifier()
