@@ -59,7 +59,7 @@ def test_an_answer_uses_the_conversation_and_is_remembered(tmp_path, monkeypatch
 
     fake = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(tool_runner=Runner)))
     monkeypatch.setattr(anthropic, "Anthropic", lambda: fake)
-    monkeypatch.setattr(brain, "build_tools", lambda system: [])
+    monkeypatch.setattr(brain, "build_tools", lambda system, searches=5: [])
     system = SimpleNamespace(settings=SimpleNamespace(data_dir=tmp_path))
     brain.remember(tmp_path / "_platform", "שאלה קודמת", "תשובה קודמת")
 
@@ -84,3 +84,52 @@ def test_commands_and_a_missing_key_are_handled_without_the_model(tmp_path, monk
 
     assert "אני האנליסט של tradesys" in sent[0]
     assert "ANTHROPIC_API_KEY" in sent[1]
+
+
+def test_a_research_question_thinks_harder_and_reads_more_of_the_web(tmp_path, monkeypatch):
+    import anthropic
+
+    seen, asked = {}, []
+
+    class Runner:
+        def __init__(self, **params):
+            seen.update(params)
+
+        def __iter__(self):
+            yield SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text="ok")])
+
+        def generate_tool_call_response(self):
+            return None
+
+    fake = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(tool_runner=Runner)))
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: fake)
+    monkeypatch.setattr(brain, "build_tools", lambda system, searches=5: asked.append(searches) or [])
+    system = SimpleNamespace(settings=SimpleNamespace(data_dir=tmp_path))
+
+    brain.answer(system, "מה מצב השוק?", TODAY)
+    assert seen["output_config"] == {"effort": "medium"} and asked[-1] == 5
+
+    brain.answer(system, "תעשה לי מחקר לעומק על NVDA", TODAY)
+    assert seen["output_config"] == {"effort": "high"} and asked[-1] == 10
+    assert brain.RESEARCH in [block["text"] for block in seen["system"]]
+
+
+def test_company_facts_skip_the_parts_the_vendor_refuses(monkeypatch):
+    import httpx
+
+    from tradesys.data.scouting_feeds import ScoutingFeeds
+
+    feeds = ScoutingFeeds("k", "s", "finnhub-key")
+
+    def fake(path, symbol, **params):
+        if path == "/stock/insider-transactions":
+            raise httpx.HTTPError("403 for this plan")
+        return {"/stock/profile2": {"name": "Apple"}, "/stock/earnings": [{"actual": 1.6}],
+                "/stock/peers": ["AAPL", "MSFT"]}[path]
+
+    monkeypatch.setattr(feeds, "_finnhub", fake)
+
+    found = feeds.company("AAPL")
+
+    assert found == {"profile": {"name": "Apple"}, "earnings": [{"actual": 1.6}], "peers": ["AAPL", "MSFT"]}
+    assert ScoutingFeeds("k", "s", "").company("AAPL") == {}

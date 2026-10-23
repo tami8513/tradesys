@@ -149,6 +149,27 @@ class ScoutingFeeds:
         upcoming = self._earnings.lookup(symbol, today).next_date
         return (upcoming - today).days if upcoming else None
 
+    def company(self, symbol: str) -> dict:
+        """Profile, the last quarters' earnings against estimates, insider trades and peers.
+
+        Each part is fetched on its own; a part the vendor refuses is simply left out.
+        """
+        if not self._finnhub_key:
+            return {}
+        found: dict = {}
+        parts = (
+            ("profile", "/stock/profile2"),
+            ("earnings", "/stock/earnings"),
+            ("insiders", "/stock/insider-transactions"),
+            ("peers", "/stock/peers"),
+        )
+        for name, path in parts:
+            try:
+                found[name] = self._finnhub(path, symbol)
+            except (httpx.HTTPError, ValueError):
+                continue
+        return found
+
     def short_interest(self, symbols: list[str]) -> dict[str, dict]:
         """The latest short-interest count per symbol, from FINRA's public data."""
         start = (date.today() - timedelta(days=SHORT_LOOKBACK_DAYS)).isoformat()
