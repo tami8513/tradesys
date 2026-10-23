@@ -104,7 +104,8 @@ def _monitor_events(report: MonitorReport) -> list[AgentEvent]:
         if closed.lessons:
             events.append(("reflection", "lessons", closed.trade.symbol, str(len(closed.lessons))))
     for line in report.adjusted:
-        kind = "held_past_target" if "holding" in line else "stop_raised"
+        kind = ("held_past_target" if "holding" in line
+                else "target_restored" if "target restored" in line else "stop_raised")
         events.append(("monitor", kind, line.split(" ", 1)[0], line))
     events.extend(("monitor", "error", "", error) for error in report.errors)
     return events

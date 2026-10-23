@@ -214,6 +214,14 @@ class Journal:
         )
         return self.get_trade(trade_id)
 
+    def set_target(self, trade_id: int, target: float) -> TradeRecord | None:
+        """Give an open trade a profit target (one whose target an earlier rule released)."""
+        self._execute(
+            "UPDATE trades SET target_price=? WHERE trade_id=? AND client_id=? AND closed_at IS NULL",
+            (target, trade_id, self.client_id),
+        )
+        return self.get_trade(trade_id)
+
     def close_trade(
         self, trade_id: int, exit_price: float, closed_at: datetime, reason: str = ""
     ) -> TradeRecord | None:

@@ -18,6 +18,7 @@ from tradesys.core.errors import TradesysError
 from tradesys.core.fileio import write_json_atomic
 from tradesys.core.models import MemoryRecord, TradeRecord
 from tradesys.core.tenancy import TenantContext
+from tradesys.agents.scout import TARGET_R_MULTIPLE
 from tradesys.data.earnings import EarningsCalendar
 from tradesys.data.indicators import closes, sma
 from tradesys.data.market_data import MarketDataProvider
@@ -184,6 +185,13 @@ class PositionMonitor(Agent):
                 and symbol in held
             ):
                 trade = self._trail(symbol, trade, price, report)
+            elif trade.side is Side.BUY and trade.target_price is None and trade.risk_per_share > 0:
+                # Without a trailing stop a position exits at its target. One whose
+                # target was released while trailing gets it back, or it would only
+                # ever leave through its stop.
+                target = trade.entry_price + TARGET_R_MULTIPLE * trade.risk_per_share
+                trade = self._journal.set_target(trade.trade_id, target) or trade
+                report.adjusted.append(f"{symbol} target restored at {target:.2f}")
 
             signal = self._evaluate(trade, price, symbol in held, now)
             if signal is None and symbol in held and trade.side is Side.BUY:

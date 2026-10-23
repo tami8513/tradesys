@@ -216,3 +216,24 @@ def test_letting_winners_run_requires_a_trailing_stop():
     base = make_profile()
     with pytest.raises(ConfigError):
         replace(base.risk, let_winners_run=True, trailing_stop=False)
+
+
+def test_without_trailing_a_released_target_comes_back(tmp_path, clock):
+    from dataclasses import replace
+
+    from test_position_monitor import Stack
+    from tradesys.agents.monitor import PositionMonitor
+    from tradesys.agents.scout import TARGET_R_MULTIPLE
+
+    stack = Stack(tmp_path, clock, price=21.0)
+    trade_id = stack.open_position()                         # entry 20, stop 18
+    stack.journal.trail_stop(trade_id, 18.0, 21.0, release_target=True)
+    assert stack.journal.get_trade(trade_id).target_price is None
+
+    profile = replace(stack.profile, risk=replace(stack.profile.risk, trailing_stop=False, let_winners_run=False))
+    monitor = PositionMonitor(stack.tenant, profile, stack.market, stack.broker, stack.journal,
+                              stack.execution, stack.reflection, clock)
+    report = monitor.check_once()
+
+    assert stack.journal.get_trade(trade_id).target_price == 20.0 + TARGET_R_MULTIPLE * 2.0
+    assert any("target restored" in line for line in report.adjusted)

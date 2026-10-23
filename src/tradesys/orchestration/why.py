@@ -170,6 +170,10 @@ def _entry(event: dict[str, Any]) -> WhyEntry | None:
             return WhyEntry(
                 when, symbol, f"הרווח מתקדם: הסטופ עלה מ-{prices[0]} ל-{prices[1]}", "positive"
             )
+    if agent == "monitor" and kind == "target_restored":
+        price = detail.rsplit(" ", 1)[-1]
+        return WhyEntry(when, symbol, f"לעסקה הוחזר יעד: היא תימכר ב-${price}, לפי השיטה החדשה בלי סטופ נגרר",
+                        "neutral")
     if agent == "monitor" and kind == "held_past_target":
         return WhyEntry(
             when, symbol, "העסקה הגיעה ליעד והמגמה עדיין עולה, אז נשארים בה עם סטופ נגרר", "positive"

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from tradesys.agents.monitor import TREND_SLOPE_BARS, TREND_SMA_PERIOD
-from tradesys.agents.scout import _TARGET_R_MULTIPLE, detect_setups
+from tradesys.agents.scout import TARGET_R_MULTIPLE, detect_setups
 from tradesys.core.enums import SetupType
 from tradesys.core.models import Bar
 from tradesys.data.indicators import sma
@@ -141,7 +141,7 @@ def simulate(
             entry = bar.close
             risk = stop_multiple * signals[i][1]
             stop = entry - risk
-            target = entry + _TARGET_R_MULTIPLE * (entry - stop)
+            target = entry + TARGET_R_MULTIPLE * (entry - stop)
             peak = entry
             shares = equity * (1 - COST) / entry
             in_trade = True

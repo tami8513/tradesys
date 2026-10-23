@@ -14,7 +14,7 @@ from tradesys.data.market_data import MarketDataProvider
 from tradesys.memory.directives import apply_directives
 from tradesys.memory.store import VectorMemory
 
-_TARGET_R_MULTIPLE = 2.5
+TARGET_R_MULTIPLE = 2.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,7 +164,7 @@ class ScoutAgent(Agent):
         rationale: str,
     ) -> Candidate:
         stop = price - self.profile.stop_multiple(symbol) * atr
-        target = price + _TARGET_R_MULTIPLE * (price - stop)
+        target = price + TARGET_R_MULTIPLE * (price - stop)
         return Candidate(
             client_id=self.client_id,
             symbol=symbol,
