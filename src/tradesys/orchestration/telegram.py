@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import threading
 import time
 from typing import Any, Callable
 
@@ -76,7 +77,7 @@ class TelegramBot:
 
     def updates(self, offset: int, timeout: int = 25) -> list[dict]:
         return self._call("getUpdates", {"offset": offset, "timeout": timeout,
-                                         "allowed_updates": ["callback_query"]},
+                                         "allowed_updates": ["callback_query", "message"]},
                           timeout=timeout + 10) or []
 
     def answer(self, callback_id: str, text: str) -> None:
@@ -107,13 +108,36 @@ def handle(update: dict, chat_id: str, on_choice: Callable[[str], str | None]) -
     }
 
 
-def poll_forever(bot: TelegramBot, on_choice: Callable[[str], str | None], stop: Callable[[], bool]) -> None:
-    """Long-poll for button presses; runs on its own thread in the scheduler."""
+def question(update: dict, chat_id: str) -> str | None:
+    """The text the client wrote to the bot, or None for anything else or anyone else."""
+    message = update.get("message") or {}
+    if str((message.get("chat") or {}).get("id")) != str(chat_id):
+        return None
+    text = message.get("text")
+    return text.strip() if isinstance(text, str) and text.strip() else None
+
+
+def poll_forever(
+    bot: TelegramBot,
+    on_choice: Callable[[str], str | None],
+    stop: Callable[[], bool],
+    on_text: Callable[[str], None] | None = None,
+) -> None:
+    """Long-poll for button presses and questions; runs on its own thread in the scheduler.
+
+    A question can take a minute of research, so each one runs on a thread of
+    its own and the buttons stay responsive meanwhile.
+    """
     offset = 0
     while not stop():
         try:
             for update in bot.updates(offset):
                 offset = max(offset, int(update["update_id"]) + 1)
+                text = question(update, bot.chat_id)
+                if text is not None and on_text is not None:
+                    threading.Thread(target=on_text, args=(text,), name="telegram-question",
+                                     daemon=True).start()
+                    continue
                 reply = handle(update, bot.chat_id, on_choice)
                 if reply is None:
                     continue

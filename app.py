@@ -1606,27 +1606,15 @@ def analyst_panel(client_id: str, symbol: str) -> None:
 @st.cache_resource(ttl=3600, show_spinner=False)
 def deep_inputs(client_id: str, symbol: str, day: str) -> dict:
     """Everything the full analysis reads, once per symbol per hour."""
-    from tradesys.agents.money_flow import read_flow
-    from tradesys.agents.strategy_lab import LOOKBACK, YEARS, run_lab
     from tradesys.data.scouting_feeds import ScoutingFeeds
+    from tradesys.orchestration.deep_analysis import gather
 
     del day
-    bust = st.session_state.get("_bust", 0)
-    bars = load_daily_history(client_id, symbol, bust)
     settings = Settings.from_env(ROOT)
     feeds = ScoutingFeeds(
         settings.market_data_key_id, settings.market_data_secret_key, settings.finnhub_api_key
     )
-    return {
-        "reading": analyst_reading(client_id, symbol, bust),
-        "lab": run_lab(bars[-(LOOKBACK + YEARS * 252 + 20):]),
-        # Stories about this stock, not round-ups that name it among many.
-        "news": [n for n in feeds.news([symbol]) if symbol in n["symbols"] and len(n["symbols"]) <= 3],
-        "analysts": feeds.analysts(symbol),
-        "growth": feeds.growth(symbol),
-        "earnings": feeds.earnings_in_days(symbol),
-        "flow": read_flow(bars),
-    }
+    return gather(load_daily_history(client_id, symbol, st.session_state.get("_bust", 0)), feeds, symbol)
 
 
 def send_robot_box(client_id: str, session, symbol: str, answer, lab, armed: bool) -> None:

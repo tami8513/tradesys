@@ -116,6 +116,47 @@ def ask_morning(session, notifier: Notifier, names) -> None:
             notifier.send(question["text"])
 
 
+HELP = (
+    "👋 אני האנליסט של tradesys. אפשר לשאול אותי כל שאלה על שוק ההון, למשל:\n"
+    "• מה מצב הנאסד\"ק היום?\n"
+    "• תנתח לי את אנבידיה\n"
+    "• מה קורה בתיק שלי?\n"
+    "• למה מניות השבבים ירדו השבוע?\n"
+    "• איך הריבית של הפד משפיעה על מניות צמיחה?\n"
+    "אני בודק נתונים חיים ומחפש ברשת כשצריך. אני לא קונה ולא מוכר: את זה עושה הרובוט, "
+    "דרך שומר הסיכון. /new מתחיל שיחה חדשה."
+)
+
+
+def ask_expert(system: TradingSystem, bot: TelegramBot, text: str) -> None:
+    """Answer one question from the client's chat with the market expert."""
+    from tradesys.orchestration import market_brain as brain
+
+    platform_dir = system.settings.data_dir / "_platform"
+    if text in ("/start", "/help"):
+        bot.send(HELP)
+        return
+    if text == "/new":
+        brain.forget(platform_dir)
+        bot.send("התחלנו שיחה חדשה.")
+        return
+    if not brain.configured():
+        bot.send("כדי שאוכל לענות על שאלות צריך להגדיר ב-Render את ANTHROPIC_API_KEY.")
+        return
+    today = datetime.now(NEW_YORK).date()
+    if not brain.within_daily_cap(platform_dir, today):
+        bot.send(f"הגעת למכסת השאלות להיום ({brain.DAILY_QUESTIONS}). נמשיך מחר.")
+        return
+    bot.send("🔎 בודק… (עד דקה)")
+    try:
+        reply = brain.answer(system, text, today)
+    except Exception:  # a failed answer must not take the listener down
+        log.exception("market expert failed")
+        reply = "משהו השתבש בזמן הבדיקה. נסה שוב בעוד דקה."
+    for part in brain.split_message(reply):
+        bot.send(part)
+
+
 def answer_button(system: TradingSystem, data: str) -> str | None:
     """A morning-question button: "m|client_id|question_id|choice"."""
     parts = data.split("|")
@@ -188,7 +229,8 @@ def run_forever(
     if isinstance(notifier, TelegramBot):
         threading.Thread(
             target=poll_forever,
-            args=(notifier, lambda data: answer_button(system, data), lambda: False),
+            args=(notifier, lambda data: answer_button(system, data), lambda: False,
+                  lambda text: ask_expert(system, notifier, text)),
             name="telegram-buttons",
             daemon=True,
         ).start()

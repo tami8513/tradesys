@@ -125,3 +125,25 @@ def verdict(
     score = sum(points for points, _ in reasons)
     level = GO if score >= 4 else CAREFUL if score >= 2 else NO
     return Verdict(level, score, reasons, hold_better)
+
+
+def gather(bars, feeds, symbol: str) -> dict:
+    """Everything the full analysis reads, from ten years of daily bars and the feeds.
+
+    Shared by the portal's analyze button and the Telegram market expert, so
+    both see exactly the same analysis.
+    """
+    from tradesys.agents.chart_analyst import analyze
+    from tradesys.agents.money_flow import read_flow
+    from tradesys.agents.strategy_lab import LOOKBACK, YEARS, run_lab
+
+    return {
+        "reading": analyze(symbol, bars),
+        "lab": run_lab(bars[-(LOOKBACK + YEARS * 252 + 20):]),
+        # Stories about this stock, not round-ups that name it among many.
+        "news": [n for n in feeds.news([symbol]) if symbol in n["symbols"] and len(n["symbols"]) <= 3],
+        "analysts": feeds.analysts(symbol),
+        "growth": feeds.growth(symbol),
+        "earnings": feeds.earnings_in_days(symbol),
+        "flow": read_flow(bars),
+    }
