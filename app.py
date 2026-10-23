@@ -550,7 +550,8 @@ def login_screen() -> None:
 
         if mode == "כניסת מנהל":
             st.markdown("##### כניסת מנהל מערכת")
-            expected = os.getenv("TRADESYS_ADMIN_PASSCODE", "")
+            # A phone keyboard or a pasted value often brings a space at the edge.
+            expected = os.getenv("TRADESYS_ADMIN_PASSCODE", "").strip()
             if not expected:
                 st.error(
                     "פורטל המנהל מושבת. יש להגדיר את משתנה הסביבה "
@@ -571,7 +572,7 @@ def login_screen() -> None:
                 if submitted:
                     import hmac
 
-                    if passcode and hmac.compare_digest(passcode, expected):
+                    if passcode.strip() and hmac.compare_digest(passcode.strip(), expected):
                         st.session_state["role"] = "admin"
                         st.session_state["_admin_unlocked"] = True
                         st.rerun()
