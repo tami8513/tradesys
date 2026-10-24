@@ -62,3 +62,11 @@ def test_commissions_follow_the_per_share_schedule():
     assert fees.commission(1000, 0.5) == approx(5.0)        # capped at 1% of 500
     line = line_for([trade(1, 100, 110, qty=1000)], 1)
     assert line.commissions == approx(10.0) and line.net == approx(10_000 - 10)
+
+
+def test_the_fee_follows_the_admin_billing_setting(tmp_path):
+    from tradesys.clients.statement import SUCCESS_FEE, fee_rate
+
+    assert fee_rate(tmp_path) == SUCCESS_FEE
+    (tmp_path / "billing.json").write_text('{"profit_share_pct": 15.0}', encoding="utf-8")
+    assert fee_rate(tmp_path) == 0.15

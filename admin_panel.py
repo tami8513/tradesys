@@ -128,6 +128,12 @@ def reactivate_tenant(session, plan: str = "standard") -> None:
     session.journal.clear_halt()
 
 
+def change_plan(session, plan: str) -> None:
+    """A new plan for an active client; trading and any halt stay as they are."""
+    current = read_lifecycle(session)
+    write_lifecycle(session, Lifecycle(active=current.active, plan=plan, reason=f"plan changed to {plan}"))
+
+
 def graceful_exit(session, reason: str) -> list:
     """סוגר כל פוזיציה פתוחה, רושם רווח/הפסד וכותב ניתוח לכל אחת.
 
@@ -1063,19 +1069,31 @@ def render_lifecycle(fleet: pd.DataFrame, armed: bool) -> None:
                 st.error(str(exc))
 
     with right:
-        st.markdown("**החזרת לקוח לפעילות**")
-        plan = st.selectbox("מסלול בהפעלה", ["standard", "trial"], key="admin_plan")
-        confirm_on = st.text_input(f"הקלד `{client_id}` לאישור", key="admin_unfreeze")
-        if st.button(
-            "הפעל מחדש",
-            disabled=not armed or lifecycle.active or confirm_on != client_id,
-            width="stretch",
-        ):
-            reactivate_tenant(session, plan)
-            st.success(f"{client_id} הופעל מחדש במסלול {plan}.")
-            invalidate()
-            load_fleet.clear()
-            st.rerun()
+        plans = ["standard", "trial"]
+        if lifecycle.active:
+            st.markdown("**שינוי מסלול**")
+            plan = st.selectbox("מסלול חדש", plans, key="admin_plan",
+                                index=plans.index(lifecycle.plan) if lifecycle.plan in plans else 0)
+            if st.button("שנה מסלול", disabled=not armed or plan == lifecycle.plan, width="stretch"):
+                change_plan(session, plan)
+                st.success(f"המסלול של {client_id} שונה ל-{plan}.")
+                load_fleet.clear()
+                st.rerun()
+            st.caption("הפעלה מחדש זמינה רק ללקוח מושהה; הלקוח הזה פעיל.")
+        else:
+            st.markdown("**החזרת לקוח לפעילות**")
+            plan = st.selectbox("מסלול בהפעלה", plans, key="admin_plan")
+            confirm_on = st.text_input(f"הקלד `{client_id}` לאישור", key="admin_unfreeze")
+            if st.button(
+                "הפעל מחדש",
+                disabled=not armed or confirm_on != client_id,
+                width="stretch",
+            ):
+                reactivate_tenant(session, plan)
+                st.success(f"{client_id} הופעל מחדש במסלול {plan}.")
+                invalidate()
+                load_fleet.clear()
+                st.rerun()
 
     halted, halt_reason = session.journal.halt_state()
     if halted and lifecycle.active:
@@ -1140,6 +1158,10 @@ def render_lifecycle(fleet: pd.DataFrame, armed: bool) -> None:
         )
         st.success("הגדרות החיוב נשמרו.")
         st.rerun()
+    elif (subscription_active, monthly, share_pct, renews) != (
+        billing.subscription_active, float(billing.monthly_price), float(billing.profit_share_pct), billing.renews_on
+    ):
+        st.warning("יש שינויים שעוד לא נשמרו — לחץ על \"שמור הגדרות חיוב\".", icon="💾")
 
     fee_columns = st.columns(4)
     fee_columns[0].metric("ממומש מצטבר", f"{calculation.cumulative_realized:+,.2f}")

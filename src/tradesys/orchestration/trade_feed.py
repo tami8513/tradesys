@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from tradesys.clients.statement import Line, statement
+from tradesys.clients.statement import Line, fee_rate, statement
 from tradesys.core.fileio import write_json_atomic
 from tradesys.core.models import TradeRecord
 from tradesys.orchestration.agent_report import EXIT_NAMES, SETUP_NAMES
@@ -96,7 +96,7 @@ def new_messages(journal, tenant_dir: Path, now: datetime,
     if since is None:
         return []
     closed = journal.closed_trades(limit=500)
-    booked = {line.trade_id: line for year in statement(closed) for line in year.lines}
+    booked = {line.trade_id: line for year in statement(closed, fee_rate=fee_rate(tenant_dir)) for line in year.lines}
     timed: list[tuple[datetime, str]] = []
     for trade in journal.open_trades() + closed:
         # A split-off part keeps the original's opening time, so it is never "bought" twice.

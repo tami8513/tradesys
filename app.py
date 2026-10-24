@@ -2045,7 +2045,9 @@ def tab_agents(snapshot: dict, session, armed: bool) -> None:
 
 def closed_statement(session) -> None:
     """Closed trades as a statement: units, commissions, success fee, tax and the loss offset."""
-    from tradesys.clients.statement import SUCCESS_FEE, TAX_RATE, statement
+    from tradesys.clients.statement import TAX_RATE, fee_rate, statement
+
+    rate = fee_rate(session.tenant.data_dir)
 
     st.markdown("##### 📒 עסקאות שנסגרו: חשבון מלא")
     trades = session.journal.closed_trades(limit=5000)
@@ -2060,17 +2062,17 @@ def closed_statement(session) -> None:
     )
     st.caption(
         f"עמלות ברוקר משוערות: חצי סנט למניה, מינימום $1 לפעולה, כמו ב-Interactive Brokers "
-        f"(בחשבון הנייר של Alpaca אין עמלות בפועל). דמי הצלחה {SUCCESS_FEE:.0%} רק על רווח חדש: "
+        f"(בחשבון הנייר של Alpaca אין עמלות בפועל). דמי הצלחה {rate:.0%} רק על רווח חדש: "
         f"אחרי הפסד הם נגבים שוב רק כשההפסד חזר. מס רווחי הון {TAX_RATE:.0%} על הרווח של השנה "
         "אחרי קיזוז הפסדים; מס שלילי הוא החזר בקיזוז, כמו מגן מס של ברוקר ישראלי. "
         "החישוב הוא הערכה; לדיווח לרשויות כדאי להיעזר ברואה חשבון."
     )
-    for year in reversed(statement(trades, carry_losses=carry)):
+    for year in reversed(statement(trades, fee_rate=rate, carry_losses=carry)):
         st.markdown(f"###### שנת {year.year} · {year.trades} עסקאות")
         cols = st.columns(6)
         cols[0].metric("רווח/הפסד ברוטו", f"${year.gross:+,.0f}")
         cols[1].metric("עמלות", f"${year.commissions:,.0f}")
-        cols[2].metric(f"דמי הצלחה {SUCCESS_FEE:.0%}", f"${year.fee:,.0f}")
+        cols[2].metric(f"דמי הצלחה {rate:.0%}", f"${year.fee:,.0f}")
         cols[3].metric(f"מס {TAX_RATE:.0%}", f"${year.tax:,.0f}")
         cols[4].metric("נטו לכיס", f"${year.take_home:+,.0f}")
         cols[5].metric("הפסד שנשאר לקיזוז", f"${year.loss_left:,.0f}")

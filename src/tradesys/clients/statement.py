@@ -18,13 +18,24 @@ does that. Without it each year starts from zero, as the client asked.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Sequence
 
 from tradesys.core.models import TradeRecord
 
 TAX_RATE = 0.25
 SUCCESS_FEE = 0.10
+
+
+def fee_rate(tenant_dir: Path) -> float:
+    """The success fee the operator set in the admin billing settings, as a fraction."""
+    try:
+        raw = json.loads((Path(tenant_dir) / "billing.json").read_text(encoding="utf-8"))
+        return float(raw["profit_share_pct"]) / 100
+    except (OSError, ValueError, KeyError, TypeError):
+        return SUCCESS_FEE
 
 
 @dataclass(frozen=True, slots=True)
