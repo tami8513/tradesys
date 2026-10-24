@@ -255,6 +255,31 @@ def seconds_until(moment: datetime, now: datetime) -> float:
     return max(0.0, (moment - now).total_seconds())
 
 
+def research_overnight(system: TradingSystem, notifier: Notifier) -> None:
+    """The researcher's brief for the coming trading day, once, before the scout's round."""
+    from tradesys.orchestration import market_brain, market_research
+
+    settings = system.settings
+    day = approval_day(datetime.now(timezone.utc))
+    if not market_research.research_due(settings.data_dir, day, market_brain.configured()):
+        return
+    market_research.count_attempt(settings.data_dir, day)
+    try:
+        brief = market_research.run_research(settings, day)
+    except Exception:
+        log.exception("market researcher failed; retrying on the next idle check")
+        return
+    if brief is None:
+        return
+    text = market_research.message(brief, day)
+    chats = {phone_link.linked_chat(d) for d in tenant_dirs(system).values()} - {None}
+    for part in market_brain.split_message(text):
+        notifier.send(part)
+        if isinstance(notifier, TelegramBot):
+            for chat in chats - {notifier.chat_id}:
+                notifier.for_chat(chat).send(part)
+
+
 def scout_overnight(settings: Settings) -> None:
     """Write the talent scout's report for the coming trading day, once."""
     day = approval_day(datetime.now(timezone.utc))
@@ -295,6 +320,7 @@ def run_forever(
                 continue
             wait = seconds_until(status.next_open, datetime.now(timezone.utc))
             watch(system, book, notifier, morning=wait <= MORNING_WINDOW_SECONDS)
+            research_overnight(system, notifier)
             scout_overnight(system.settings)
             log.info(
                 "market closed (%s); next open %s; sleeping %.0f min",

@@ -85,6 +85,22 @@ def scout_calls(platform_dir: Path, today: date) -> list[Call]:
     return calls
 
 
+def research_calls(platform_dir: Path, today: date) -> list[Call]:
+    """Every stock and fund the market researcher named, at the price on the day it named it."""
+    calls = []
+    for path in sorted(Path(platform_dir).glob("research_*.json")):
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            day = datetime.fromisoformat(raw["made_at"]).date()
+            if day < today - timedelta(days=LOOKBACK_DAYS):
+                continue
+            named = {s for theme in raw["themes"] for s in theme["stocks"] + theme["funds"]}
+            calls += [Call(day, s, "R", float(raw["prices"][s])) for s in sorted(named) if s in raw["prices"]]
+        except (ValueError, KeyError, TypeError, OSError):
+            continue
+    return calls
+
+
 def _close_on_or_before(bars: Sequence[Bar], day: date) -> float | None:
     earlier = [b.close for b in bars if b.ts.date() <= day]
     return earlier[-1] if earlier else None

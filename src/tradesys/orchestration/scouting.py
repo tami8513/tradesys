@@ -16,6 +16,7 @@ from tradesys.core.config import Settings
 from tradesys.data.asset_search import AssetDirectory
 from tradesys.data.indicators import closes
 from tradesys.data.market_data import AlpacaMarketData
+from tradesys.orchestration.market_research import load_brief, theme_symbols
 
 log = logging.getLogger("tradesys.scouting")
 
@@ -47,7 +48,12 @@ def scout_market(settings: Settings, day: date) -> list[ScoutReport]:
         earnings_in_days=feeds.earnings_in_days,
         short_interest=feeds.short_interest,
     )
-    reports = scout.shortlist(UNIVERSES["leaders"], benchmark_6m)
+    # The researcher's theme stocks join the pool and are graded like any other name.
+    themes = theme_symbols(load_brief(settings.data_dir, day))
+    reports = scout.shortlist([*UNIVERSES["leaders"], *themes], benchmark_6m)
+    for report in reports:
+        if report.symbol in themes:
+            report.strengths.insert(0, f"📰 חוקר השוק: {themes[report.symbol]}")
     save_reports(settings.data_dir, day, reports)
     log.info("talent scout: %d names on the shortlist for %s", len(reports), day)
     return reports

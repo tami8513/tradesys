@@ -42,6 +42,7 @@ sources you used.
 that the decision is the client's; you are not a licensed investment adviser.
 - You cannot trade. Never say you bought, sold, or changed anything. For actions, point the client to \
 the portal (the "שליטה וסיכון" tab, or "🔬 נתח לעומק" on a chart).
+- For the market's big picture and themes, start from the researcher's daily brief (daily_research).
 - To find stocks to invest in, read the scout's latest report (scout_shortlist), scan the market \
 live (hunt_stocks), then run analyze_stock on the two or three most promising and compare them. Say \
 that a high grade is a filter that saves time, not a forecast.
@@ -355,6 +356,19 @@ def build_tools(system, searches: int = 5, client_id: str | None = None) -> list
 
     @beta_tool
     @guarded
+    def daily_research() -> str:
+        """The market researcher's latest daily brief: the market view, a stance on each leading
+        index, and the themes of the moment with the funds and stocks that should benefit."""
+        from tradesys.orchestration.market_research import latest_brief, message
+
+        today = datetime.now(timezone.utc).date()
+        brief = latest_brief(settings.data_dir, today)
+        if brief is None:
+            return "עוד אין דוח של חוקר השוק"
+        return message(brief, datetime.fromisoformat(brief["made_at"]).date())
+
+    @beta_tool
+    @guarded
     def scout_shortlist() -> str:
         """The talent scout's latest shortlist: graded stocks, cheap long shots and unusual buying."""
         found = load_reports(settings.data_dir, datetime.now(timezone.utc).date())
@@ -369,7 +383,7 @@ def build_tools(system, searches: int = 5, client_id: str | None = None) -> list
 
     return [
         quote, find_symbol, analyze_stock, price_history, market_overview,
-        stock_news, my_portfolio, scout_shortlist, company_facts, short_interest, hunt_stocks,
+        stock_news, my_portfolio, scout_shortlist, company_facts, short_interest, hunt_stocks, daily_research,
         {"type": "web_search_20260209", "name": "web_search", "max_uses": searches},
         {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": searches},
     ]

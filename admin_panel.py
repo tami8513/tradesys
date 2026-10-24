@@ -305,15 +305,22 @@ STATUS_STYLE = {
 }
 
 
-def priced_calls(platform_dir: Path, market) -> tuple[list, list]:
-    """The scout's shortlists and the full analyses, priced again today."""
+def priced_calls(platform_dir: Path, market) -> tuple[list, list, list]:
+    """The scout's shortlists, the full analyses and the researcher's themes, priced again today."""
     from datetime import date
 
-    from tradesys.orchestration.track_record import BENCHMARK, outcomes, read_analyses, scout_calls
+    from tradesys.orchestration.track_record import (
+        BENCHMARK,
+        outcomes,
+        read_analyses,
+        research_calls,
+        scout_calls,
+    )
 
     today = date.today()
     scout, analyses = scout_calls(platform_dir, today), read_analyses(platform_dir)
-    symbols = sorted({c.symbol for c in scout + analyses} | {BENCHMARK})
+    research = research_calls(platform_dir, today)
+    symbols = sorted({c.symbol for c in scout + analyses + research} | {BENCHMARK})
     try:
         if hasattr(market, "daily_many"):
             bars = {}
@@ -322,8 +329,8 @@ def priced_calls(platform_dir: Path, market) -> tuple[list, list]:
         else:
             bars = {s: market.history(s, timeframe="1Day", limit=130) for s in symbols}
     except Exception:  # without prices the analysts simply show no record yet
-        return [], []
-    return outcomes(scout, bars, today), outcomes(analyses, bars, today)
+        return [], [], []
+    return outcomes(scout, bars, today), outcomes(analyses, bars, today), outcomes(research, bars, today)
 
 
 def client_ops(session, platform_dir: Path):
@@ -397,12 +404,13 @@ def load_agent_report(client_ids: tuple[str, ...], days: int, bust: int) -> list
                 [t.r_multiple() for t in history],
             )
         )
-    scout_results, analysis_results = (
-        priced_calls(platform_dir, market) if platform_dir is not None else ([], [])
+    scout_results, analysis_results, research_results = (
+        priced_calls(platform_dir, market) if platform_dir is not None else ([], [], [])
     )
     return build_report(ReportInput(
         trades, events, statuses, directives, memory, books, replays,
-        scout_outcomes=scout_results, analysis_outcomes=analysis_results, ops=ops,
+        scout_outcomes=scout_results, analysis_outcomes=analysis_results,
+        research_outcomes=research_results, ops=ops,
     ))
 
 

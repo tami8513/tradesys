@@ -78,6 +78,7 @@ class ReportInput:
     replays: Sequence[tuple[str, dict[str, Any]]] = ()   # (client_id, latest historical test)
     scout_outcomes: Sequence[Outcome] = ()                # the scout's shortlists, priced again
     analysis_outcomes: Sequence[Outcome] = ()             # full analyses, priced again
+    research_outcomes: Sequence[Outcome] = ()             # the researcher's theme stocks, priced again
     ops: Sequence[Ops] = ()                               # per client: phone channel and alerts
 
 
@@ -106,6 +107,7 @@ def build_report(data: ReportInput) -> list[AgentCard]:
         _talent_scout(data),
         _money_flow(data),
         _analyst(data),
+        _researcher(data),
         _alerts(data),
     ]
     for card in cards:
@@ -662,6 +664,21 @@ def _money_flow(data: ReportInput) -> AgentCard:
         "במחקר של 10 שנים על המניות הגדולות, קנייה חריגה לבדה לא הקדימה את המדד. "
         "הסוכן מקבל משקל רק דרך ההיסטוריה של כל מניה, וזה צריך להישאר כך עד שהרקורד שלו יוכיח אחרת."
     )
+    return card
+
+
+def _researcher(data: ReportInput) -> AgentCard:
+    card = AgentCard(
+        "researcher",
+        "חוקר השוק",
+        "כל ערב קורא ברשת את מה שהזיז את השוק: גיאופוליטיקה, מלחמות, ריבית, אנרגיה ודוחות, "
+        "בודק את זה מול תנועות המדדים והסקטורים, ובוחר נושאים עם המניות שירוויחו מהם.",
+    )
+    results = data.research_outcomes
+    card.kpis.append(("מניות שהוא הציע, בנות שבוע ומעלה", str(len(results))))
+    if results:
+        _calls_kpis(card, "הנושאים שלו", results)
+    _judge_calls(card, results, "מניות הנושאים")
     return card
 
 

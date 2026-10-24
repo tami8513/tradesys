@@ -2676,6 +2676,39 @@ def scout_card(report) -> str:
     )
 
 
+def research_panel() -> None:
+    """The market researcher's latest brief, above the scout's shortlist."""
+    from zoneinfo import ZoneInfo
+
+    from tradesys.orchestration.market_research import HORIZONS, STANCES, latest_brief
+
+    def md(value: object) -> str:
+        # Escaped, and "$" kept literal: Streamlit would read "$80 ... $90" as a formula.
+        return esc(value).replace("$", "\\$")
+
+    brief = latest_brief(get_system().settings.data_dir, datetime.now(timezone.utc).date())
+    if brief is None:
+        return
+    when = datetime.fromisoformat(brief["made_at"]).astimezone(ZoneInfo("Asia/Jerusalem"))
+    with st.expander(f"📰 חוקר השוק: {md(brief['headline'])}", expanded=True):
+        st.caption(f"נכתב ב-{when:%d/%m %H:%M} (שעון ישראל) אחרי קריאת החדשות ברשת ובדיקה מול תנועות המחירים.")
+        st.markdown(md(brief["market_view"]))
+        names = {"SPY": "S&P 500", "QQQ": "נאסד\"ק", "DIA": "דאו", "IWM": "ראסל"}
+        for item in brief["indices"]:
+            st.markdown(f"{STANCES[item['stance']]} **{names[item['symbol']]}**: {md(item['why'])}")
+        for theme in brief["themes"]:
+            st.markdown(
+                f"**{md(theme['name'])}** · ביטחון {theme['confidence']}/5 · טווח {HORIZONS[theme['horizon']]}"
+                + (" · 🌱 מוקדם" if theme["early"] else "")
+            )
+            st.caption(md(theme["why"]))
+            st.caption("קרנות: " + (", ".join(theme["funds"]) or "—") + " · מניות: "
+                       + (", ".join(theme["stocks"]) or "—") + f" · מה יפריך: {md(theme['risks'])}")
+        if brief["avoid"]:
+            st.caption("להיזהר: " + "; ".join(f"{a['symbol']} ({md(a['why'])})" for a in brief["avoid"]))
+        st.caption("המניות של הנושאים נכנסות לבדיקת הסקאוט למטה. זה מחקר, לא המלצת קנייה.")
+
+
 def tab_scout(client_id: str, session, armed: bool) -> None:
     """The talent scout's shortlist for the coming trading day."""
     from zoneinfo import ZoneInfo
@@ -2691,6 +2724,7 @@ def tab_scout(client_id: str, session, armed: bool) -> None:
         "צמיחה וסיכון. הוא לא קונה לבד: מניה שתוסיף ל\"המניות שלי\" עוברת את שומר "
         "הסיכון כמו כל רעיון. הציון הוא סינון שחוסך לך זמן, לא תחזית."
     )
+    research_panel()
     found = load_reports(get_system().settings.data_dir, approval_day(datetime.now(timezone.utc)))
     if found is None:
         st.info("הסקאוט יוצא לסיבוב כל ערב אחרי סגירת המסחר. הדוח הראשון יופיע כאן אחרי הסיבוב הבא.")
