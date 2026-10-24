@@ -313,9 +313,11 @@ class Journal:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def order_statuses(self) -> list[str]:
+    def order_statuses(self, recent: int = -1) -> list[str]:
+        """Statuses of the client's orders, newest first; `recent` keeps only the last ones."""
         rows = self._execute(
-            "SELECT status FROM orders WHERE client_id=?", (self.client_id,)
+            "SELECT status FROM orders WHERE client_id=? ORDER BY submitted_at DESC LIMIT ?",
+            (self.client_id, recent),
         ).fetchall()
         return [row["status"] for row in rows]
 

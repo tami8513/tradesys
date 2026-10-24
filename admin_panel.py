@@ -294,6 +294,9 @@ def load_hive(client_ids: tuple[str, ...], bust: int) -> dict:
 
 # --------------------------------------------------------------- דוח סוכנים
 
+# The execution card judges the last orders, not every order since the account opened.
+RECENT_ORDERS = 20
+
 STATUS_STYLE = {
     "good": ("עובד טוב", PALETTE["positive"]),
     "watch": ("דורש מעקב", PALETTE["warning"]),
@@ -375,7 +378,8 @@ def load_agent_report(client_ids: tuple[str, ...], days: int, bust: int) -> list
         history = journal.closed_trades(limit=5000)
         trades += [t for t in history if t.closed_at and t.closed_at >= since]
         events += journal.agent_events(since)
-        statuses += journal.order_statuses()
+        # Recent orders only, so a fix shows up instead of being buried under old misses.
+        statuses += journal.order_statuses(recent=RECENT_ORDERS)
         directives += len(journal.active_directives())
         memory += session.memory.count()
         platform_dir = session.tenant.data_dir.parent / "_platform"

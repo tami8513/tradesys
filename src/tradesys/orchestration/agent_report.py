@@ -266,7 +266,7 @@ def _execution(data: ReportInput) -> AgentCard:
     )
     statuses = Counter(data.order_statuses)
     total = sum(statuses.values())
-    card.kpis.append(("פקודות שנשלחו", str(total)))
+    card.kpis.append(("פקודות אחרונות שנבדקו", str(total)))
     if total:
         filled = statuses.get("filled", 0)
         rate = filled / total
