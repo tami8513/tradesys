@@ -2960,8 +2960,16 @@ def index_robot_panel(client_id: str, session, armed: bool) -> None:
             "🛡 ביטוח שוק דובי: במגמת ירידה ארוכה להחזיק רק חצי, ולהחזיר כשהמגמה מתהפכת",
             value=settings.bear_insurance, disabled=not armed,
         )
+        swing = st.toggle(
+            "🌊 סווינג בנאסד\"ק: מתחת לממוצע 200 יום יוצאים למזומן וקונים רק ירידות חדות",
+            value=settings.swing, disabled=not armed,
+            help="בבדיקה על 2016-2026 זה ניצח החזקה של הנאסד\"ק בכל התקופות: 10 שנים 20.2% בשנה מול "
+                 "19.6%, 5 שנים 17.6% מול 13.3%, שנתיים 23.9% מול 20.1%, והנפילה הכי עמוקה ירדה מ-36% "
+                 "ל-29%. אותו כלל היה גרוע יותר מהחזקה בדאו ומעורב ב-S&P 500, ולכן הוא רק לנאסד\"ק. "
+                 "ביטוח שוק דובי לא חל על הנאסד\"ק כשהסווינג פעיל.",
+        )
         if st.form_submit_button("שמור", disabled=not armed, width="stretch"):
-            chosen = clean_settings(enabled, budget, indices, insurance, acknowledged)
+            chosen = clean_settings(enabled, budget, indices, insurance, acknowledged, swing=swing)
             if enabled and not chosen.enabled:
                 st.error("כדי להפעיל צריך לסמן את ההסכמה ולבחור לפחות מדד אחד.")
             else:

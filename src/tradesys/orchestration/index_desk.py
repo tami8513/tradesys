@@ -14,7 +14,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from tradesys.agents.chart_analyst import trend_view
-from tradesys.agents.index_robot import IndexView, plan, refresh
+from tradesys.agents.index_robot import IndexView, plan, refresh, swing_signals
 from tradesys.clients.index_sleeve import book_equity, read_ledger, read_settings, write_ledger
 from tradesys.core.enums import OrderType, Side, TimeInForce
 from tradesys.core.errors import BrokerError
@@ -61,12 +61,13 @@ def run_index_robot(session, *, can_buy: bool) -> list[AgentEvent]:
     views: dict[str, IndexView] = {}
     for symbol in sorted(set(settings.indices) | set(ledger.holdings)):
         try:
-            reading = trend_view(session.market_data.history(symbol, timeframe="1Day", limit=HISTORY_BARS))
+            bars = session.market_data.history(symbol, timeframe="1Day", limit=HISTORY_BARS)
+            reading = trend_view(bars)
         except Exception as exc:  # one index's data outage skips it today, not the others
             events.append(("index", "failed", symbol, f"no data: {exc}"))
             continue
         if reading is not None:
-            views[symbol] = IndexView(*reading)
+            views[symbol] = IndexView(*reading, *swing_signals([b.close for b in bars]))
     if not views:
         return events    # no data at all: try again on the next cycle
     refresh(settings, ledger, views)
@@ -107,7 +108,10 @@ def run_index_robot(session, *, can_buy: bool) -> list[AgentEvent]:
             ledger.bought(order.symbol, filled, average, today)
             cash -= filled * average
         else:
-            ledger.sold(order.symbol, filled, average, park=order.park)
+            ledger.sold(order.symbol, filled, average, park=order.park, insure=not order.swing)
+        if order.swing:
+            ledger.swung(order.symbol, order.swing)
+        if order.side is Side.SELL:
             if not ledger.qty(order.symbol) and order.symbol not in settings.indices:
                 ledger.release(order.symbol)
         events.append(("index", order.side.value, order.symbol, f"{filled}|{average:.2f}|{order.reason}"))

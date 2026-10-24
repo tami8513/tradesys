@@ -30,9 +30,10 @@ class SleeveSettings:
     indices: tuple[str, ...] = DEFAULT_INDICES
     bear_insurance: bool = False             # cut to half in a death cross
     acknowledged: bool = False               # the client accepted holding without a stop
+    swing: bool = False                      # the Nasdaq swing: out below the 200-day, in on sharp dips
 
 
-def clean_settings(enabled, budget, indices, bear_insurance, acknowledged) -> SleeveSettings:
+def clean_settings(enabled, budget, indices, bear_insurance, acknowledged, swing=False) -> SleeveSettings:
     """Validate a choice at the boundary."""
     chosen = tuple(dict.fromkeys(s for s in indices if s in INDEX_CHOICES))
     return SleeveSettings(
@@ -41,6 +42,7 @@ def clean_settings(enabled, budget, indices, bear_insurance, acknowledged) -> Sl
         indices=chosen,
         bear_insurance=bool(bear_insurance),
         acknowledged=bool(acknowledged),
+        swing=bool(swing),
     )
 
 
@@ -52,7 +54,7 @@ def read_settings(tenant_dir: Path) -> SleeveSettings:
         raw = json.loads(path.read_text(encoding="utf-8"))
         return clean_settings(
             raw.get("enabled", False), raw.get("budget", 0.0), raw.get("indices", ()),
-            raw.get("bear_insurance", False), raw.get("acknowledged", False),
+            raw.get("bear_insurance", False), raw.get("acknowledged", False), raw.get("swing", False),
         )
     except (ValueError, OSError, AttributeError, TypeError):
         return SleeveSettings()
@@ -85,6 +87,8 @@ class Ledger:
     realized: float = 0.0
     last_buy: dict[str, str] = field(default_factory=dict)    # symbol -> ISO date
     last_run: str = ""                                         # ISO date of the last daily run
+    swing_out: list[str] = field(default_factory=list)        # out of the index below its 200-day
+    dipping: list[str] = field(default_factory=list)          # holding a dip bought below the 200-day
 
     def qty(self, symbol: str) -> int:
         return self.holdings.get(symbol, Holding()).qty
@@ -99,8 +103,11 @@ class Ledger:
         holding.cost += spend
         self.last_buy[symbol] = day
 
-    def sold(self, symbol: str, qty: int, price: float, *, park: bool) -> None:
-        """Book a sale. Parked proceeds stay with the robot; the rest go back to the main book."""
+    def sold(self, symbol: str, qty: int, price: float, *, park: bool, insure: bool = True) -> None:
+        """Book a sale. Parked proceeds stay with the robot; the rest go back to the main book.
+
+        `insure` marks a parked sale as the bear-market insurance; the swing parks without it.
+        """
         holding = self.holdings[symbol]
         qty = min(qty, holding.qty)
         average = holding.cost / holding.qty
@@ -110,7 +117,7 @@ class Ledger:
         holding.cost -= qty * average
         if park:
             self.parked[symbol] = self.parked.get(symbol, 0.0) + proceeds
-            if symbol not in self.insured:
+            if insure and symbol not in self.insured:
                 self.insured.append(symbol)
         else:
             self.contributed[symbol] = self.contributed.get(symbol, 0.0) - proceeds
@@ -122,6 +129,14 @@ class Ledger:
         self.contributed[symbol] = self.contributed.get(symbol, 0.0) - self.parked.pop(symbol, 0.0)
         if symbol in self.insured:
             self.insured.remove(symbol)
+
+    def swung(self, symbol: str, step: str) -> None:
+        """Follow the swing after a fill: "exit" leaves, "dip" buys a dip, "back" is home again."""
+        for marks, keep in ((self.swing_out, step == "exit"), (self.dipping, step == "dip")):
+            if keep and symbol not in marks:
+                marks.append(symbol)
+            elif not keep and symbol in marks:
+                marks.remove(symbol)
 
     def recovered(self, symbol: str) -> None:
         if symbol in self.insured:
@@ -156,6 +171,8 @@ def read_ledger(tenant_dir: Path) -> Ledger:
         realized=float(raw.get("realized", 0.0)),
         last_buy={str(k): str(v) for k, v in raw.get("last_buy", {}).items()},
         last_run=str(raw.get("last_run", "")),
+        swing_out=[str(s) for s in raw.get("swing_out", [])],
+        dipping=[str(s) for s in raw.get("dipping", [])],
     )
 
 
