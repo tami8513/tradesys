@@ -2225,6 +2225,61 @@ def tab_broker(client_id: str, demo: bool = False) -> None:
         st.rerun()
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def bot_username() -> str:
+    from tradesys.orchestration.telegram import TelegramBot
+    from tradesys.orchestration.watchdog import notifier_from_env
+
+    notifier = notifier_from_env()
+    if not isinstance(notifier, TelegramBot):
+        return ""
+    try:
+        return notifier.username()
+    except Exception:  # no bot reachable: the tab says so instead of failing
+        return ""
+
+
+def tab_phone(client_id: str, demo: bool = False) -> None:
+    """The client's own Telegram: a message per buy and sale, the morning question, and the expert."""
+    from tradesys.orchestration import phone_link
+
+    st.markdown("##### 📱 הודעות לטלפון בטלגרם")
+    if demo:
+        upgrade_cta("הודעות לטלפון זמינות ללקוחות רשומים",
+                    "לקוח רשום מקבל בטלגרם הודעה על כל קנייה ומכירה, שאלה לפני הפתיחה, "
+                    "ואנליסט שעונה על כל שאלה על שוק ההון.", key="cta_phone")
+        return
+    username = bot_username()
+    if not username:
+        st.info("הבוט עוד לא הוגדר בשרת. פנה למנהל המערכת.")
+        return
+    directory = tenant_dir(client_id)
+    chat = phone_link.linked_chat(directory)
+    if chat:
+        st.success("✅ הטלגרם שלך מחובר. כל קנייה ומכירה ושאלת הבוקר מגיעות אליך לטלפון, "
+                   f"ואפשר לשאול את @{username} כל שאלה על שוק ההון.")
+        if st.button("נתק את הטלגרם", key="phone_unlink"):
+            phone_link.unlink(directory)
+            st.rerun()
+        return
+    st.caption("1. רשום את מספר הטלפון שמחובר לטלגרם שלך ולחץ \"חבר\".  \n"
+               "2. לחץ על הכפתור שיופיע; טלגרם ייפתח. לחץ שם Start.  \n"
+               "אם טלגרם לא מעביר אותך לבוט, חפש בו את "
+               f"@{username}, לחץ Start ואז \"שתף את מספר הטלפון שלי\".")
+    registered = get_registration_store().get(client_id)
+    phone = st.text_input("מספר טלפון", value=registered.phone if registered else "",
+                          placeholder="050-1234567", key="phone_number")
+    if st.button("חבר", type="primary", key="phone_link"):
+        try:
+            code = phone_link.start_link(directory, phone, datetime.now(timezone.utc))
+            st.session_state["phone_link_url"] = phone_link.link_url(username, code)
+        except ValueError as exc:
+            st.error(str(exc))
+    if st.session_state.get("phone_link_url"):
+        st.link_button("📲 פתח את הבוט בטלגרם", st.session_state["phone_link_url"], type="primary")
+        st.caption("הקישור תקף לחצי שעה. אחרי שתלחץ Start, רענן את הדף כדי לראות שהחיבור הצליח.")
+
+
 def tab_billing(client_id: str, snapshot: dict, demo: bool = False) -> None:
     directory = tenant_dir(client_id)
     billing = acct.read_billing(directory)
@@ -3313,6 +3368,7 @@ def client_portal(client_id: str, demo: bool = False) -> None:
             "גרפים",
             "פעילות הסוכנים",
             "חיבור ברוקר",
+            "📱 טלגרם",
             "חיוב ותשלומים",
             "בקרה",
         ],
@@ -3334,8 +3390,10 @@ def client_portal(client_id: str, demo: bool = False) -> None:
     with tabs[5]:
         tab_broker(client_id, demo)
     with tabs[6]:
-        tab_billing(client_id, snapshot, demo)
+        tab_phone(client_id, demo)
     with tabs[7]:
+        tab_billing(client_id, snapshot, demo)
+    with tabs[8]:
         tab_controls(client_id, snapshot, session, armed, demo)
 
     if (

@@ -24,6 +24,7 @@ MODEL = "claude-opus-5-5"
 HISTORY_FILE = "brain_history.json"
 HISTORY_TURNS = 8            # question-answer pairs kept as context
 DAILY_QUESTIONS = 100        # a cap on spend if the bot were ever abused
+CLIENT_DAILY_QUESTIONS = 30  # each linked client's own chat
 TELEGRAM_LIMIT = 4000
 
 SYSTEM = """You are the market analyst inside tradesys, an automated trading platform. You talk with \
@@ -93,14 +94,14 @@ def forget(platform_dir: Path) -> None:
         write_json_atomic(path, book)
 
 
-def within_daily_cap(platform_dir: Path, today: date) -> bool:
+def within_daily_cap(platform_dir: Path, today: date, cap: int | None = None) -> bool:
     """Count today's question; False once the day's cap is reached."""
     path = _history_path(platform_dir)
     with locked(path):
         book = read_history(platform_dir)
         if book.get("day") != today.isoformat():
             book["day"], book["asked"] = today.isoformat(), 0
-        if book["asked"] >= DAILY_QUESTIONS:
+        if book["asked"] >= (DAILY_QUESTIONS if cap is None else cap):
             return False
         book["asked"] += 1
         write_json_atomic(path, book)
@@ -126,7 +127,7 @@ def split_message(text: str, limit: int = TELEGRAM_LIMIT) -> list[str]:
 
 # -------------------------------------------------------------------- tools
 
-def build_tools(system, searches: int = 5) -> list:
+def build_tools(system, searches: int = 5, client_id: str | None = None) -> list:
     """Read-only tools over the live system, plus web search and reading the pages it finds."""
     from anthropic import beta_tool
 
@@ -268,11 +269,11 @@ def build_tools(system, searches: int = 5) -> list:
         """The client's accounts: value, cash, every position with its profit, its protective stop
         and target, and the index robot's holdings."""
         lines = []
-        for client_id in system.registry.list_ids():
-            session = system.for_client(client_id)
+        for account_id in [client_id] if client_id else system.registry.list_ids():
+            session = system.for_client(account_id)
             try:
                 account = session.broker.account()
-                lines.append(f"חשבון {client_id}: שווי ${account.equity:,.0f}, מזומן ${account.cash:,.0f}")
+                lines.append(f"חשבון {account_id}: שווי ${account.equity:,.0f}, מזומן ${account.cash:,.0f}")
                 trades = {t.symbol: t for t in session.journal.open_trades()}
                 for p in session.broker.positions():
                     trade = trades.get(p.symbol)
@@ -385,11 +386,14 @@ def configured() -> bool:
     return bool(os.getenv("ANTHROPIC_API_KEY"))
 
 
-def answer(system, question: str, today: date) -> str:
-    """One answer, with the recent conversation as context."""
+def answer(system, question: str, today: date, client_id: str | None = None) -> str:
+    """One answer, with the recent conversation as context.
+
+    A client's question sees only that client's account and keeps its own conversation.
+    """
     import anthropic
 
-    platform_dir = system.settings.data_dir / "_platform"
+    platform_dir = system.tenant(client_id).data_dir if client_id else system.settings.data_dir / "_platform"
     messages: list[dict] = []
     for turn in read_history(platform_dir).get("turns", []):
         messages += [{"role": "user", "content": turn["q"]}, {"role": "assistant", "content": turn["a"]}]
@@ -398,7 +402,7 @@ def answer(system, question: str, today: date) -> str:
     client = anthropic.Anthropic()
     # "Research" or "in depth" asks for more thought and more of the web.
     deep = any(word in question.lower() for word in DEEP_WORDS)
-    tools = build_tools(system, searches=10 if deep else 5)
+    tools = build_tools(system, searches=10 if deep else 5, client_id=client_id)
     last = None
     for _ in range(5):          # resume a turn the server paused during a long web search
         runner = client.beta.messages.tool_runner(

@@ -1,8 +1,9 @@
 """The Telegram channel: messages to the client's phone, and answers back from its buttons.
 
-Only the configured chat is listened to. An update from any other chat is
-dropped without a reply: a stranger who finds the bot must not be able to
-press a button that sells a position.
+One bot serves the operator's chat and every client who linked their own chat
+(see phone_link). A button press or a question counts only from a chat that
+owns it: a stranger who finds the bot must not be able to press a button that
+sells a position.
 """
 
 from __future__ import annotations
@@ -28,6 +29,23 @@ class TelegramBot:
         # Identifies the channel without storing the token: a new token or chat greets again.
         self.fingerprint = hashlib.sha256(f"{token}|{chat_id}".encode()).hexdigest()[:16]
         self._http = http or httpx
+
+    def for_chat(self, chat_id: str) -> "TelegramBot":
+        """The same bot, speaking to another chat."""
+        return TelegramBot(self._token, chat_id, http=self._http)
+
+    def username(self) -> str:
+        return str((self._call("getMe", {}) or {}).get("username", ""))
+
+    def ask_phone(self, text: str) -> None:
+        """A message with a one-tap button that shares the client's own phone number."""
+        try:
+            self._call("sendMessage", {"chat_id": self.chat_id, "text": text, "reply_markup": {
+                "keyboard": [[{"text": "📱 שתף את מספר הטלפון שלי", "request_contact": True}]],
+                "resize_keyboard": True, "one_time_keyboard": True,
+            }})
+        except Exception:  # a phone channel being down must never stop trading
+            log.exception("telegram send failed")
 
     def _call(self, method: str, payload: dict, timeout: float = 15) -> Any:
         response = self._http.post(API.format(token=self._token, method=method), json=payload,
@@ -117,33 +135,33 @@ def question(update: dict, chat_id: str) -> str | None:
     return text.strip() if isinstance(text, str) and text.strip() else None
 
 
-def poll_forever(
-    bot: TelegramBot,
-    on_choice: Callable[[str], str | None],
-    stop: Callable[[], bool],
-    on_text: Callable[[str], None] | None = None,
-) -> None:
-    """Long-poll for button presses and questions; runs on its own thread in the scheduler.
+def chat_of(update: dict) -> str:
+    message = update.get("message") or (update.get("callback_query") or {}).get("message") or {}
+    return str((message.get("chat") or {}).get("id", ""))
 
-    A question can take a minute of research, so each one runs on a thread of
-    its own and the buttons stay responsive meanwhile.
+
+def press(bot: TelegramBot, update: dict, on_choice: Callable[[str], str | None]) -> None:
+    """Apply a button press from the bot's own chat and show the outcome on the message."""
+    reply = handle(update, bot.chat_id, on_choice)
+    if reply is None:
+        return
+    bot.answer(reply["callback_id"], reply["toast"])
+    if reply["text"] and reply["message_id"]:
+        bot.edit(reply["message_id"], reply["text"])
+
+
+def poll_forever(bot: TelegramBot, route: Callable[[dict], None], stop: Callable[[], bool]) -> None:
+    """Long-poll for button presses and messages; runs on its own thread in the scheduler.
+
+    A question can take a minute of research, so each update is routed on a
+    thread of its own and the buttons stay responsive meanwhile.
     """
     offset = 0
     while not stop():
         try:
             for update in bot.updates(offset):
                 offset = max(offset, int(update["update_id"]) + 1)
-                text = question(update, bot.chat_id)
-                if text is not None and on_text is not None:
-                    threading.Thread(target=on_text, args=(text,), name="telegram-question",
-                                     daemon=True).start()
-                    continue
-                reply = handle(update, bot.chat_id, on_choice)
-                if reply is None:
-                    continue
-                bot.answer(reply["callback_id"], reply["toast"])
-                if reply["text"] and reply["message_id"]:
-                    bot.edit(reply["message_id"], reply["text"])
+                threading.Thread(target=route, args=(update,), name="telegram-update", daemon=True).start()
         except Exception:  # keep listening through network hiccups
             log.exception("telegram polling failed")
             time.sleep(5)

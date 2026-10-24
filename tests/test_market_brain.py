@@ -59,7 +59,7 @@ def test_an_answer_uses_the_conversation_and_is_remembered(tmp_path, monkeypatch
 
     fake = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(tool_runner=Runner)))
     monkeypatch.setattr(anthropic, "Anthropic", lambda: fake)
-    monkeypatch.setattr(brain, "build_tools", lambda system, searches=5: [])
+    monkeypatch.setattr(brain, "build_tools", lambda system, searches=5, client_id=None: [])
     system = SimpleNamespace(settings=SimpleNamespace(data_dir=tmp_path))
     brain.remember(tmp_path / "_platform", "שאלה קודמת", "תשובה קודמת")
 
@@ -103,7 +103,7 @@ def test_a_research_question_thinks_harder_and_reads_more_of_the_web(tmp_path, m
 
     fake = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(tool_runner=Runner)))
     monkeypatch.setattr(anthropic, "Anthropic", lambda: fake)
-    monkeypatch.setattr(brain, "build_tools", lambda system, searches=5: asked.append(searches) or [])
+    monkeypatch.setattr(brain, "build_tools", lambda system, searches=5, client_id=None: asked.append(searches) or [])
     system = SimpleNamespace(settings=SimpleNamespace(data_dir=tmp_path))
 
     brain.answer(system, "מה מצב השוק?", TODAY)

@@ -28,7 +28,8 @@ from tradesys.data.market_clock import MarketClock, market_clock
 from tradesys.orchestration.engine import TradingSystem
 from tradesys.orchestration.morning import CHOICES, answer, ask, asked_on
 from tradesys.orchestration.scouting import scout_due, scout_market
-from tradesys.orchestration.telegram import TelegramBot, poll_forever
+from tradesys.orchestration import phone_link
+from tradesys.orchestration.telegram import TelegramBot, chat_of, poll_forever, press, question
 from tradesys.orchestration.trade_feed import new_messages
 from tradesys.orchestration.watchdog import (
     AlertBook,
@@ -107,13 +108,13 @@ def ask_morning(session, notifier: Notifier, names) -> None:
             prices[trade.symbol] = session.market_data.last_price(trade.symbol)
         except Exception:  # an unpriced position is simply not asked about today
             continue
-    for question in ask(session.tenant.data_dir, today, trades, prices, names):
-        buttons = [[(label, f"m|{session.client_id}|{question['id']}|{key}")]
+    for pending_question in ask(session.tenant.data_dir, today, trades, prices, names):
+        buttons = [[(label, f"m|{session.client_id}|{pending_question['id']}|{key}")]
                    for key, label in CHOICES.items()]
         if isinstance(notifier, TelegramBot):
-            notifier.send(question["text"], buttons)
+            notifier.send(pending_question["text"], buttons)
         else:
-            notifier.send(question["text"])
+            notifier.send(pending_question["text"])
 
 
 HELP = (
@@ -128,28 +129,34 @@ HELP = (
 )
 
 
-def ask_expert(system: TradingSystem, bot: TelegramBot, text: str) -> None:
-    """Answer one question from the client's chat with the market expert."""
+def ask_expert(system: TradingSystem, bot: TelegramBot, text: str, client_id: str | None = None) -> None:
+    """Answer one question with the market expert.
+
+    `client_id` is set for a client's own chat: the expert then sees only that
+    client's account, and the conversation and daily cap are theirs. Without it
+    the question is the operator's, who sees every account.
+    """
     from tradesys.orchestration import market_brain as brain
 
-    platform_dir = system.settings.data_dir / "_platform"
-    if text in ("/start", "/help"):
+    memory = system.tenant(client_id).data_dir if client_id else system.settings.data_dir / "_platform"
+    if text in ("/start", "/help") or text.startswith("/start "):
         bot.send(HELP)
         return
     if text == "/new":
-        brain.forget(platform_dir)
+        brain.forget(memory)
         bot.send("התחלנו שיחה חדשה.")
         return
     if not brain.configured():
         bot.send("כדי שאוכל לענות על שאלות צריך להגדיר ב-Render את ANTHROPIC_API_KEY.")
         return
     today = datetime.now(NEW_YORK).date()
-    if not brain.within_daily_cap(platform_dir, today):
-        bot.send(f"הגעת למכסת השאלות להיום ({brain.DAILY_QUESTIONS}). נמשיך מחר.")
+    cap = brain.CLIENT_DAILY_QUESTIONS if client_id else brain.DAILY_QUESTIONS
+    if not brain.within_daily_cap(memory, today, cap):
+        bot.send(f"הגעת למכסת השאלות להיום ({cap}). נמשיך מחר.")
         return
     bot.send("🔎 בודק… (עד דקה)")
     try:
-        reply = brain.answer(system, text, today)
+        reply = brain.answer(system, text, today, client_id)
     except Exception:  # a failed answer must not take the listener down
         log.exception("market expert failed")
         reply = "משהו השתבש בזמן הבדיקה. נסה שוב בעוד דקה."
@@ -157,12 +164,54 @@ def ask_expert(system: TradingSystem, bot: TelegramBot, text: str) -> None:
         bot.send(part)
 
 
-def answer_button(system: TradingSystem, data: str) -> str | None:
-    """A morning-question button: "m|client_id|question_id|choice"."""
+def answer_button(system: TradingSystem, data: str, client_id: str | None = None) -> str | None:
+    """A morning-question button: "m|client_id|question_id|choice".
+
+    From a client's own chat only that client's questions can be answered.
+    """
     parts = data.split("|")
     if len(parts) != 4 or parts[0] != "m" or parts[1] not in system.registry.list_ids():
         return None
+    if client_id is not None and parts[1] != client_id:
+        return None
     return answer(system.tenant(parts[1]).data_dir, parts[2], parts[3])
+
+
+LINKED = ("✅ הטלגרם שלך מחובר לחשבון {client}. מעכשיו תקבל כאן הודעה על כל קנייה ומכירה, "
+          "ואת שאלת הבוקר לפני הפתיחה. אפשר גם לשאול אותי כל שאלה על שוק ההון.")
+STRANGER = ("👋 זה הבוט של tradesys. כדי לחבר אותו לחשבון שלך: בפורטל, בלשונית \"📱 טלגרם\", "
+            "רשום את מספר הטלפון ולחץ \"חבר\". אחר כך לחץ כאן על הכפתור למטה כדי לשתף את המספר.")
+
+
+def tenant_dirs(system: TradingSystem) -> dict:
+    return {client_id: system.tenant(client_id).data_dir for client_id in system.registry.list_ids()}
+
+
+def route(system: TradingSystem, bot: TelegramBot, update: dict) -> None:
+    """One update from any chat: a link, a button press or a question, or a polite no."""
+    chat = chat_of(update)
+    if not chat:
+        return
+    dirs = tenant_dirs(system)
+    here = bot.for_chat(chat)
+    message = update.get("message") or {}
+    linked = phone_link.claim(dirs, message, datetime.now(timezone.utc)) if message else None
+    if linked:
+        here.send(LINKED.format(client=linked))
+        return
+    client_id = phone_link.client_for_chat(dirs, chat)
+    operator = chat == bot.chat_id
+    if not operator and client_id is None:
+        if str(message.get("text") or "").startswith("/start") or message.get("contact"):
+            here.ask_phone(STRANGER)
+        return
+    # The operator's chat speaks for the platform even if it is also linked to a client.
+    owner = None if operator else client_id
+    text = question(update, chat)
+    if text is not None:
+        ask_expert(system, here, text, owner)
+        return
+    press(here, update, lambda data: answer_button(system, data, owner))
 
 
 def watch(
@@ -186,10 +235,14 @@ def watch(
                 alerts.append(failure)
             for message in book.update(client_id, alerts, now):
                 notifier.send(message)
+            # Trades and the morning question go to the client's own chat once linked;
+            # until then, as before, to the operator's.
+            chat = phone_link.linked_chat(session.tenant.data_dir)
+            client = notifier.for_chat(chat) if chat and isinstance(notifier, TelegramBot) else notifier
             for message in new_messages(session.journal, session.tenant.data_dir, now, names):
-                notifier.send(message)
+                client.send(message)
             if morning:
-                ask_morning(session, notifier, names)
+                ask_morning(session, client, names)
         except Exception:
             # The watchdog must never take the trading loop down with it.
             log.exception("watchdog failed for %s", client_id)
@@ -229,8 +282,7 @@ def run_forever(
     if isinstance(notifier, TelegramBot):
         threading.Thread(
             target=poll_forever,
-            args=(notifier, lambda data: answer_button(system, data), lambda: False,
-                  lambda text: ask_expert(system, notifier, text)),
+            args=(notifier, lambda update: route(system, notifier, update), lambda: False),
             name="telegram-buttons",
             daemon=True,
         ).start()
